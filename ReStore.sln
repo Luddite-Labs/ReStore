@@ -6,8 +6,14 @@ MinimumVisualStudioVersion = 10.0.40219.1
 Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "ReStore.Core", "ReStore.Core\ReStore.Core.csproj", "{2F83696C-C34C-421F-895A-42CA7F038228}"
 EndProject
 Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "ReStore", "ReStore\ReStore.csproj", "{D14CFA9E-7E1D-4E0C-8E2F-3C7B48C6C5D3}"
+	ProjectSection(ProjectDependencies) = postProject
+		{2F83696C-C34C-421F-895A-42CA7F038228} = {2F83696C-C34C-421F-895A-42CA7F038228}
+	EndProjectSection
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ReStore.Tests", "ReStore.Tests\ReStore.Tests.csproj", "{42E51C2E-0070-475E-B7C5-B13038B2D798}"
+	ProjectSection(ProjectDependencies) = postProject
+		{2F83696C-C34C-421F-895A-42CA7F038228} = {2F83696C-C34C-421F-895A-42CA7F038228}
+	EndProjectSection
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution

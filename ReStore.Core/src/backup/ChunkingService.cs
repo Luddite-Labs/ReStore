@@ -49,7 +49,25 @@ public class ChunkingService
         }
     }
 
-    public async Task<ChunkedFileBuildResult> BuildFileManifestEntryAsync(string filePath, string baseDirectory, CancellationToken cancellationToken = default)
+    public Task<ChunkedFileBuildResult> BuildFileManifestEntryAsync(string filePath, string baseDirectory, CancellationToken cancellationToken = default)
+    {
+        return BuildFileManifestEntryAsync(filePath, baseDirectory, null, cancellationToken);
+    }
+
+    /// <summary>
+    /// Chunks a file and builds its manifest entry.
+    /// </summary>
+    /// <param name="chunkSink">
+    /// Invoked once per chunk as it is produced. When supplied, payload bytes are handed to the
+    /// sink and not retained, so peak memory stays at roughly one chunk rather than the whole
+    /// file. When null the payloads are collected into
+    /// <see cref="ChunkedFileBuildResult.ChunkPayloads"/> instead.
+    /// </param>
+    public async Task<ChunkedFileBuildResult> BuildFileManifestEntryAsync(
+        string filePath,
+        string baseDirectory,
+        Func<ChunkBuildPayload, CancellationToken, Task>? chunkSink,
+        CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(filePath))
         {
@@ -76,8 +94,7 @@ public class ChunkingService
 
         var readBuffer = new byte[128 * 1024];
         var currentChunkSize = 0;
-        var rollingWindow = new Queue<byte>(_profile.RollingHashWindowSize);
-        ulong rollingHash = 0;
+        var rollingHash = new RollingWindowHash(_profile.RollingHashWindowSize, GEAR_TABLE);
 
         while (true)
         {
@@ -87,44 +104,39 @@ public class ChunkingService
                 break;
             }
 
+            // Once per read buffer, not per byte: a per-byte check dominates this loop without
+            // making cancellation meaningfully more responsive.
+            cancellationToken.ThrowIfCancellationRequested();
+
             fileHasher.AppendData(readBuffer.AsSpan(0, bytesRead));
 
             for (var index = 0; index < bytesRead; index++)
             {
-                cancellationToken.ThrowIfCancellationRequested();
-
                 var currentByte = readBuffer[index];
                 chunkStream.WriteByte(currentByte);
                 currentChunkSize++;
 
-                rollingWindow.Enqueue(currentByte);
-                if (rollingWindow.Count > _profile.RollingHashWindowSize)
-                {
-                    rollingWindow.Dequeue();
-                }
+                rollingHash.Add(currentByte);
 
-                rollingHash = ComputeRollingWindowHash(rollingWindow);
-
-                if (!ShouldCutChunk(rollingHash, currentChunkSize))
+                if (!ShouldCutChunk(rollingHash.Value, currentChunkSize))
                 {
                     continue;
                 }
 
-                AppendChunkPayload(chunkStream, chunkEntries, chunkPayloads);
+                await AppendChunkPayloadAsync(chunkStream, chunkEntries, chunkPayloads, chunkSink, cancellationToken);
                 if (chunkEntries.Count > _chunkConfig.MaxChunksPerFile)
                 {
                     throw new InvalidOperationException($"File exceeds maxChunksPerFile safety limit ({_chunkConfig.MaxChunksPerFile}): {filePath}");
                 }
 
                 currentChunkSize = 0;
-                rollingWindow.Clear();
-                rollingHash = 0;
+                rollingHash.Reset();
             }
         }
 
         if (chunkStream.Length > 0)
         {
-            AppendChunkPayload(chunkStream, chunkEntries, chunkPayloads);
+            await AppendChunkPayloadAsync(chunkStream, chunkEntries, chunkPayloads, chunkSink, cancellationToken);
         }
 
         if (chunkEntries.Count > _chunkConfig.MaxChunksPerFile)
@@ -175,26 +187,18 @@ public class ChunkingService
         return rollingHash % targetSize == targetSize - 1;
     }
 
-    private static ulong ComputeRollingWindowHash(IEnumerable<byte> rollingWindow)
-    {
-        ulong hash = 0;
-        foreach (var value in rollingWindow)
-        {
-            hash = (hash << 1) + GEAR_TABLE[value];
-        }
-
-        return hash;
-    }
-
-    private void AppendChunkPayload(
+    private async Task AppendChunkPayloadAsync(
         MemoryStream chunkStream,
         List<SnapshotChunkManifestEntry> chunkEntries,
-        List<ChunkBuildPayload> chunkPayloads)
+        List<ChunkBuildPayload> chunkPayloads,
+        Func<ChunkBuildPayload, CancellationToken, Task>? chunkSink,
+        CancellationToken cancellationToken)
     {
         var plaintext = chunkStream.ToArray();
         if (plaintext.Length == 0)
         {
             chunkStream.SetLength(0);
+            chunkStream.Position = 0;
             return;
         }
 
@@ -211,13 +215,22 @@ public class ChunkingService
             StoredSizeBytes = storedPayload.Length
         });
 
-        chunkPayloads.Add(new ChunkBuildPayload
+        var payload = new ChunkBuildPayload
         {
             ChunkId = chunkHash,
             ContentHash = chunkHash,
             PlainSizeBytes = plaintext.Length,
             StoredPayload = storedPayload
-        });
+        };
+
+        if (chunkSink != null)
+        {
+            await chunkSink(payload, cancellationToken);
+        }
+        else
+        {
+            chunkPayloads.Add(payload);
+        }
 
         chunkStream.SetLength(0);
         chunkStream.Position = 0;
@@ -236,5 +249,82 @@ public class ChunkingService
         }
 
         return table;
+    }
+
+    private sealed class RollingWindowHash
+    {
+        private const ulong HashBase = 257;
+
+        private readonly int _windowSize;
+        private readonly ulong[] _gearTable;
+        private readonly byte[] _window;
+        private readonly ulong _oldestByteMultiplier;
+        private int _position;
+        private int _count;
+
+        public RollingWindowHash(int windowSize, ulong[] gearTable)
+        {
+            _windowSize = Math.Max(0, windowSize);
+            _gearTable = gearTable;
+            _window = _windowSize == 0 ? [] : new byte[_windowSize];
+            _oldestByteMultiplier = ComputeOldestByteMultiplier(_windowSize);
+        }
+
+        public ulong Value { get; private set; }
+
+        public void Add(byte value)
+        {
+            var contribution = _gearTable[value];
+
+            unchecked
+            {
+                if (_windowSize == 0)
+                {
+                    Value = (Value * HashBase) + contribution;
+                    return;
+                }
+
+                if (_count < _windowSize)
+                {
+                    _window[_position] = value;
+                    _position = (_position + 1) % _windowSize;
+                    _count++;
+                    Value = (Value * HashBase) + contribution;
+                    return;
+                }
+
+                var removed = _window[_position];
+                _window[_position] = value;
+                _position = (_position + 1) % _windowSize;
+
+                Value = ((Value - (_gearTable[removed] * _oldestByteMultiplier)) * HashBase) + contribution;
+            }
+        }
+
+        public void Reset()
+        {
+            Value = 0;
+            _position = 0;
+            _count = 0;
+        }
+
+        private static ulong ComputeOldestByteMultiplier(int windowSize)
+        {
+            if (windowSize <= 1)
+            {
+                return 1;
+            }
+
+            ulong multiplier = 1;
+            unchecked
+            {
+                for (var index = 1; index < windowSize; index++)
+                {
+                    multiplier *= HashBase;
+                }
+            }
+
+            return multiplier;
+        }
     }
 }

@@ -41,6 +41,7 @@ public class ConfigValidator(ILogger logger)
         ValidateStorageSources(config.StorageSources, result);
         ValidateEncryptionSettings(config.Encryption, result);
         ValidateChunkDiffingSettings(config.ChunkDiffing ?? new ChunkDiffingConfig(), result);
+        ValidateVerificationSettings(config.Verification ?? new VerificationConfig(), result);
         ValidateExclusionSettings(config, result);
 
         if (result.IsValid)
@@ -100,7 +101,6 @@ public class ConfigValidator(ILogger logger)
 
     private static void ValidateBackupSettings(IConfigManager config, ConfigValidationResult result)
     {
-        // Validate backup interval
         if (config.BackupInterval <= TimeSpan.Zero)
         {
             result.AddError("Backup interval must be greater than zero.");
@@ -114,7 +114,6 @@ public class ConfigValidator(ILogger logger)
             result.AddWarning("Backup interval is greater than 7 days. Consider more frequent backups for data protection.");
         }
 
-        // Validate size thresholds
         if (config.SizeThresholdMB <= 0)
         {
             result.AddError("Size threshold must be greater than zero.");
@@ -133,19 +132,16 @@ public class ConfigValidator(ILogger logger)
             result.AddWarning("Maximum file size is very large (> 1GB). Large files may impact backup performance.");
         }
 
-        // Check if max file size is larger than size threshold
         if (config.MaxFileSizeMB > config.SizeThresholdMB)
         {
             result.AddWarning("Maximum file size is larger than size threshold. This configuration may be inconsistent.");
         }
 
-        // Validate backup type
         if (!Enum.IsDefined(typeof(BackupType), config.BackupType))
         {
             result.AddError($"Invalid backup type: {config.BackupType}");
         }
 
-        // Validate retention settings
         if (config.Retention.Enabled)
         {
             if (config.Retention.KeepLastPerDirectory < 1)
@@ -162,6 +158,12 @@ public class ConfigValidator(ILogger logger)
             {
                 result.AddInfo("Retention is enabled with maxAgeDays=0 (age-based deletion disabled). Only keepLastPerDirectory will apply.");
             }
+        }
+        else
+        {
+            result.AddWarning(
+                "Retention is disabled. Snapshots are kept indefinitely and storage use will grow without bound. " +
+                $"Ready-to-use defaults are keepLastPerDirectory={config.Retention.KeepLastPerDirectory} and maxAgeDays={config.Retention.MaxAgeDays}.");
         }
     }
 
@@ -215,7 +217,6 @@ public class ConfigValidator(ILogger logger)
             return;
         }
 
-        // Skip validation for storage sources that are not configured
         if (IsStorageSourceUnconfigured(sourceName, config))
         {
             result.AddInfo($"Storage source '{sourceName}' is not configured (skipped validation).");
@@ -259,13 +260,11 @@ public class ConfigValidator(ILogger logger)
 
     private static bool IsStorageSourceUnconfigured(string sourceName, StorageConfig config)
     {
-        // Check if this is a non-local storage with placeholder values
         if (sourceName.ToLowerInvariant() == "local")
         {
-            return false; // Always validate local storage
+            return false;
         }
 
-        // Check if any option contains placeholder text
         return config.Options.Any(opt =>
             string.IsNullOrWhiteSpace(opt.Value) ||
             opt.Value.StartsWith("your_", StringComparison.OrdinalIgnoreCase) ||
@@ -276,31 +275,25 @@ public class ConfigValidator(ILogger logger)
     {
         try
         {
-            var expandedPath = Environment.ExpandEnvironmentVariables(config.Path);
-            var directory = Path.GetDirectoryName(expandedPath);
+            // The configured path is the storage root itself, which LocalStorage creates on
+            // initialize. Checking its parent instead passed roots that could not be created
+            // and rejected drive roots, whose parent is null.
+            var expandedPath = Path.GetFullPath(Environment.ExpandEnvironmentVariables(config.Path));
 
-            if (string.IsNullOrEmpty(directory))
+            if (Directory.Exists(expandedPath))
             {
-                result.AddError($"Local storage '{sourceName}' has invalid path: {config.Path}");
+                result.AddInfo($"Local storage directory validated: {expandedPath}");
                 return;
             }
 
-            // Check if we can create the directory
-            if (!Directory.Exists(directory))
+            try
             {
-                try
-                {
-                    Directory.CreateDirectory(directory);
-                    result.AddInfo($"Local storage directory created: {directory}");
-                }
-                catch (Exception ex)
-                {
-                    result.AddError($"Cannot create local storage directory '{directory}': {ex.Message}");
-                }
+                Directory.CreateDirectory(expandedPath);
+                result.AddInfo($"Local storage directory created: {expandedPath}");
             }
-            else
+            catch (Exception ex)
             {
-                result.AddInfo($"Local storage directory validated: {directory}");
+                result.AddError($"Cannot create local storage directory '{expandedPath}': {ex.Message}");
             }
         }
         catch (Exception ex)
@@ -356,7 +349,6 @@ public class ConfigValidator(ILogger logger)
             return;
         }
 
-        // Validate region format
         if (config.Options.TryGetValue("region", out string? region) && !region.Contains("your_"))
         {
             if (!IsValidAwsRegion(region))
@@ -365,7 +357,6 @@ public class ConfigValidator(ILogger logger)
             }
         }
 
-        // Validate bucket name format
         if (config.Options.TryGetValue("bucketName", out string? bucketName) && !bucketName.Contains("your_"))
         {
             if (!IsValidS3BucketName(bucketName))
@@ -488,7 +479,6 @@ public class ConfigValidator(ILogger logger)
 
     private static void ValidateExclusionSettings(IConfigManager config, ConfigValidationResult result)
     {
-        // Validate excluded patterns
         if (config.ExcludedPatterns != null)
         {
             foreach (var pattern in config.ExcludedPatterns)
@@ -513,7 +503,6 @@ public class ConfigValidator(ILogger logger)
             }
         }
 
-        // Validate excluded paths
         if (config.ExcludedPaths != null)
         {
             foreach (var path in config.ExcludedPaths)
@@ -589,6 +578,42 @@ public class ConfigValidator(ILogger logger)
         }
     }
 
+    private static void ValidateVerificationSettings(VerificationConfig verification, ConfigValidationResult result)
+    {
+        if (!verification.Enabled)
+        {
+            result.AddInfo("Scheduled verification is disabled. Backups are not periodically checked for bit-rot or dropped objects.");
+            return;
+        }
+
+        if (verification.VerifyInterval <= TimeSpan.Zero)
+        {
+            result.AddError("verification.verifyInterval must be greater than zero when verification is enabled.");
+            return;
+        }
+
+        if (verification.VerifyInterval < TimeSpan.FromHours(1))
+        {
+            result.AddWarning("verification.verifyInterval is less than 1 hour. Verification re-downloads every unique chunk and is expensive.");
+        }
+
+        if (!verification.LocalStorageOnly)
+        {
+            result.AddWarning(
+                "Scheduled verification is enabled for remote providers. Every run downloads and decrypts all unique chunks, which incurs egress cost on metered storage.");
+        }
+
+        if (verification.SnapshotsPerRun < 1)
+        {
+            result.AddError("verification.snapshotsPerRun must be at least 1.");
+        }
+        else if (verification.SnapshotsPerRun > 10)
+        {
+            result.AddWarning(
+                $"verification.snapshotsPerRun is {verification.SnapshotsPerRun}. Each snapshot re-downloads every unique chunk it references, so a high value multiplies the transfer cost of one cycle.");
+        }
+    }
+
     private static void ValidateChunkDiffingSettings(ChunkDiffingConfig chunkDiffing, ConfigValidationResult result)
     {
         if (chunkDiffing.ManifestVersion < 2)
@@ -651,7 +676,6 @@ public class ConfigValidator(ILogger logger)
     {
         if (string.IsNullOrWhiteSpace(region)) return false;
 
-        // Full, up-to-date list of known AWS commercial regions
         var validRegions = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {
             // US
@@ -706,7 +730,6 @@ public class ConfigValidator(ILogger logger)
         if (string.IsNullOrWhiteSpace(bucketName) || bucketName.Length < 3 || bucketName.Length > 63)
             return false;
 
-        // S3 bucket naming rules
         if (bucketName.StartsWith('-') || bucketName.EndsWith('-') || bucketName.StartsWith('.') || bucketName.EndsWith('.'))
             return false;
 

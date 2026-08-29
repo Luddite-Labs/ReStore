@@ -14,7 +14,7 @@
 
 **Prerequisites:**
 
-- .NET 9.0 SDK or later
+- .NET 10.0 SDK or later
 - Windows OS (Windows 10 or later recommended)
 
 1. Clone the repository:

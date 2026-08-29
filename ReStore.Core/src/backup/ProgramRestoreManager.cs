@@ -45,7 +45,6 @@ public class ProgramRestoreManager(ILogger logger)
     {
         var result = new ProgramRestoreResult();
         
-        // Check if winget is available
         var wingetAvailable = await IsWingetAvailableAsync();
         if (!wingetAvailable)
         {
@@ -72,7 +71,6 @@ public class ProgramRestoreManager(ILogger logger)
             return result;
         }
 
-        // Install winget programs
         if (wingetAvailable && wingetPrograms.Any())
         {
             foreach (var program in wingetPrograms)
@@ -100,7 +98,6 @@ public class ProgramRestoreManager(ILogger logger)
             }
         }
 
-        // Report manual programs
         if (!wingetOnly && manualPrograms.Any())
         {
             result.ManualInstallRequired.AddRange(manualPrograms);

@@ -228,6 +228,51 @@ public class FileWatcherTests : IDisposable
         changed.Count.Should().Be(0);
     }
 
+    [Fact]
+    public async Task ProcessBackupTimerAsync_ShouldStopPromptly_WhenDisposedMidFlight()
+    {
+        var storageMock = new Mock<IStorage>();
+        _configMock.Setup(c => c.CreateStorageAsync(It.IsAny<string>())).ReturnsAsync(storageMock.Object);
+
+        await File.WriteAllTextAsync(Path.Combine(_watchDir, "a.txt"), "content");
+
+        var watcher = new FileWatcher(_configMock.Object, _logger, _state, _sizeAnalyzer);
+        await watcher.StartAsync();
+
+        var changedMethod = typeof(FileWatcher).GetMethod("OnChanged", BindingFlags.Instance | BindingFlags.NonPublic);
+        changedMethod!.Invoke(watcher, [this, new FileSystemEventArgs(WatcherChangeTypes.Changed, _watchDir, "a.txt")]);
+
+        // Dispose before the sweep runs: the token is already cancelled, so the sweep must
+        // bail out rather than back up against a torn-down watcher.
+        watcher.Dispose();
+
+        var processMethod = typeof(FileWatcher).GetMethod("ProcessBackupTimerAsync", BindingFlags.Instance | BindingFlags.NonPublic);
+        var task = (Task)processMethod!.Invoke(watcher, [])!;
+
+        var act = async () => await task;
+        await act.Should().NotThrowAsync("shutdown cancellation is expected, not an error");
+
+        storageMock.Verify(s => s.UploadAsync(It.IsAny<string>(), It.IsAny<string>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task Dispose_ShouldNotThrow_WhenCalledWhileSweepHoldsTheLock()
+    {
+        var watcher = new FileWatcher(_configMock.Object, _logger, _state, _sizeAnalyzer);
+        await watcher.StartAsync();
+
+        // The execution lock is deliberately not disposed, because an in-flight sweep still
+        // releases it in its finally block.
+        var lockField = typeof(FileWatcher).GetField("_backupExecutionLock", BindingFlags.Instance | BindingFlags.NonPublic);
+        var executionLock = (SemaphoreSlim)lockField!.GetValue(watcher)!;
+        await executionLock.WaitAsync();
+
+        watcher.Dispose();
+
+        var release = () => executionLock.Release();
+        release.Should().NotThrow("disposing the watcher must not dispose a semaphore a sweep still holds");
+    }
+
     private static ConcurrentDictionary<string, DateTime> GetChangedFiles(FileWatcher watcher)
     {
         var field = typeof(FileWatcher).GetField("_changedFiles", BindingFlags.Instance | BindingFlags.NonPublic);

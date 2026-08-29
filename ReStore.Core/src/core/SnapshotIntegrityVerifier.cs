@@ -1,4 +1,4 @@
-using ReStore.Core.src.storage;
+﻿using ReStore.Core.src.storage;
 using ReStore.Core.src.utils;
 using System.Security.Cryptography;
 using System.Text.Json;
@@ -26,13 +26,19 @@ public class SnapshotVerificationResult
 
 public class SnapshotIntegrityVerifier(ILogger logger, IStorage storage, IPasswordProvider? passwordProvider = null, SystemState? systemState = null)
 {
+    // Matches the bound Restore uses, so both paths have the same footprint.
+    private const long MaxChunkCacheBytes = 64L * 1024 * 1024;
+
     private readonly ILogger _logger = logger;
     private readonly IStorage _storage = storage;
     private readonly IPasswordProvider? _passwordProvider = passwordProvider;
     private readonly SystemState? _systemState = systemState;
     private readonly EncryptionService _encryptionService = new(logger);
 
-    public async Task<SnapshotVerificationResult> VerifyAsync(string backupPath)
+    public async Task<SnapshotVerificationResult> VerifyAsync(
+        string backupPath,
+        IProgress<VerificationProgress>? progress = null,
+        CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(backupPath))
         {
@@ -53,7 +59,7 @@ public class SnapshotIntegrityVerifier(ILogger logger, IStorage storage, IPasswo
             string? expectedRootHashFromHead = null;
             if (backupPath.EndsWith("/HEAD", StringComparison.OrdinalIgnoreCase))
             {
-                var headReference = await ResolveManifestPathFromHeadAsync(backupPath, tempDirectory);
+                var headReference = await ResolveManifestPathFromHeadAsync(backupPath, tempDirectory, cancellationToken);
                 manifestPath = headReference.ManifestPath;
                 expectedRootHashFromHead = headReference.RootHash;
             }
@@ -66,7 +72,7 @@ public class SnapshotIntegrityVerifier(ILogger logger, IStorage storage, IPasswo
 
             result.ResolvedManifestPath = manifestPath;
 
-            var manifest = await DownloadManifestAsync(manifestPath, tempDirectory);
+            var manifest = await DownloadManifestAsync(manifestPath, tempDirectory, cancellationToken);
             result.SnapshotId = manifest.SnapshotId;
             result.EncryptionEnabled = manifest.EncryptionEnabled;
             result.FileCount = manifest.Files.Count;
@@ -102,15 +108,26 @@ public class SnapshotIntegrityVerifier(ILogger logger, IStorage storage, IPasswo
             var uniqueChunkDescriptors = BuildUniqueChunkDescriptors(manifest, result);
             result.UniqueChunks = uniqueChunkDescriptors.Count;
 
-            var verifiedChunks = await VerifyChunksAsync(
+            var verifiedChunkIds = await VerifyChunksAsync(
                 uniqueChunkDescriptors,
                 chunkStorageNamespace,
                 manifest.EncryptionEnabled,
                 encryptionMasterKey,
                 tempDirectory,
-                result);
+                result,
+                progress,
+                cancellationToken);
 
-            VerifyFiles(manifest, verifiedChunks, result);
+            await VerifyFilesAsync(
+                manifest,
+                verifiedChunkIds,
+                chunkStorageNamespace,
+                encryptionMasterKey,
+                tempDirectory,
+                result,
+                progress,
+                cancellationToken);
+
             LogVerificationTelemetry(result);
 
             return result;
@@ -121,22 +138,28 @@ public class SnapshotIntegrityVerifier(ILogger logger, IStorage storage, IPasswo
         }
     }
 
-    private async Task<SnapshotManifest> DownloadManifestAsync(string manifestPath, string tempDirectory)
+    private async Task<SnapshotManifest> DownloadManifestAsync(
+        string manifestPath,
+        string tempDirectory,
+        CancellationToken cancellationToken = default)
     {
         var tempManifestPath = Path.Combine(tempDirectory, "snapshot.manifest.json");
         await _storage.DownloadAsync(manifestPath, tempManifestPath);
 
-        var manifestJson = await File.ReadAllTextAsync(tempManifestPath);
+        var manifestJson = await File.ReadAllTextAsync(tempManifestPath, cancellationToken);
         return JsonSerializer.Deserialize<SnapshotManifest>(manifestJson)
             ?? throw new InvalidOperationException($"Failed to deserialize snapshot manifest: {manifestPath}");
     }
 
-    private async Task<SnapshotHeadReference> ResolveManifestPathFromHeadAsync(string headPath, string tempDirectory)
+    private async Task<SnapshotHeadReference> ResolveManifestPathFromHeadAsync(
+        string headPath,
+        string tempDirectory,
+        CancellationToken cancellationToken = default)
     {
         var tempHeadPath = Path.Combine(tempDirectory, "snapshot.head");
         await _storage.DownloadAsync(headPath, tempHeadPath);
 
-        var lines = await File.ReadAllLinesAsync(tempHeadPath);
+        var lines = await File.ReadAllLinesAsync(tempHeadPath, cancellationToken);
         var nonEmptyLines = lines
             .Where(line => !string.IsNullOrWhiteSpace(line))
             .Select(line => line.Trim())
@@ -215,18 +238,29 @@ public class SnapshotIntegrityVerifier(ILogger logger, IStorage storage, IPasswo
         return descriptors;
     }
 
-    private async Task<Dictionary<string, byte[]>> VerifyChunksAsync(
+    private async Task<HashSet<string>> VerifyChunksAsync(
         IReadOnlyDictionary<string, ChunkDescriptor> chunkDescriptors,
         string? chunkStorageNamespace,
         bool encrypted,
         byte[]? encryptionMasterKey,
         string tempDirectory,
-        SnapshotVerificationResult result)
+        SnapshotVerificationResult result,
+        IProgress<VerificationProgress>? progress = null,
+        CancellationToken cancellationToken = default)
     {
-        var verifiedChunks = new Dictionary<string, byte[]>(StringComparer.OrdinalIgnoreCase);
+        var verifiedChunkIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var chunksHandled = 0;
 
         foreach (var descriptor in chunkDescriptors.Values.OrderBy(value => value.ChunkId, StringComparer.OrdinalIgnoreCase))
         {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            progress?.Report(new VerificationProgress(
+                descriptor.ChunkId,
+                chunksHandled,
+                chunkDescriptors.Count,
+                "chunks"));
+
             var remoteChunkPath = SnapshotStoragePaths.GetChunkPath(descriptor.ChunkId, chunkStorageNamespace);
             var tempChunkPath = Path.Combine(tempDirectory, $"{descriptor.ChunkId}.chunk");
 
@@ -239,18 +273,20 @@ public class SnapshotIntegrityVerifier(ILogger logger, IStorage storage, IPasswo
             {
                 result.MissingChunks++;
                 result.Errors.Add($"Missing chunk object: {remoteChunkPath}");
+                chunksHandled++;
                 continue;
             }
             catch (Exception ex)
             {
                 result.InvalidChunks++;
                 result.Errors.Add($"Failed to download chunk '{descriptor.ChunkId}': {ex.Message}");
+                chunksHandled++;
                 continue;
             }
 
             try
             {
-                var storedBytes = await File.ReadAllBytesAsync(tempChunkPath);
+                var storedBytes = await File.ReadAllBytesAsync(tempChunkPath, cancellationToken);
                 var plainBytes = encrypted
                     ? EncryptionService.DecryptChunkDeterministic(storedBytes, encryptionMasterKey!, descriptor.ChunkId)
                     : storedBytes;
@@ -272,14 +308,16 @@ public class SnapshotIntegrityVerifier(ILogger logger, IStorage storage, IPasswo
                     continue;
                 }
 
-                verifiedChunks[descriptor.ChunkId] = plainBytes;
+                // Not retained: the per-file pass re-fetches what it needs, keeping peak
+                // temp usage at one chunk instead of the whole unique-chunk set.
+                verifiedChunkIds.Add(descriptor.ChunkId);
             }
             catch (CryptographicException ex)
             {
                 result.InvalidChunks++;
                 result.Errors.Add($"Failed to decrypt chunk '{descriptor.ChunkId}': {ex.Message}");
             }
-            catch (Exception ex)
+            catch (Exception ex) when (ex is not OperationCanceledException)
             {
                 result.InvalidChunks++;
                 result.Errors.Add($"Failed to validate chunk '{descriptor.ChunkId}': {ex.Message}");
@@ -287,25 +325,47 @@ public class SnapshotIntegrityVerifier(ILogger logger, IStorage storage, IPasswo
             finally
             {
                 TryDeleteTemporaryFile(tempChunkPath);
+                chunksHandled++;
             }
         }
 
-        return verifiedChunks;
+        return verifiedChunkIds;
     }
 
-    private static void VerifyFiles(
+    /// <summary>
+    /// Re-hashes each file from its chunks, fetched on demand through a size-bounded LRU.
+    /// </summary>
+    private async Task VerifyFilesAsync(
         SnapshotManifest manifest,
-        IReadOnlyDictionary<string, byte[]> verifiedChunks,
-        SnapshotVerificationResult result)
+        IReadOnlySet<string> verifiedChunkIds,
+        string? chunkStorageNamespace,
+        byte[]? encryptionMasterKey,
+        string tempDirectory,
+        SnapshotVerificationResult result,
+        IProgress<VerificationProgress>? progress = null,
+        CancellationToken cancellationToken = default)
     {
+        var chunkCache = new ChunkByteCache(MaxChunkCacheBytes);
+        var filesHandled = 0;
+
         foreach (var file in manifest.Files.OrderBy(entry => entry.RelativePath, StringComparer.OrdinalIgnoreCase))
         {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            progress?.Report(new VerificationProgress(
+                file.RelativePath,
+                filesHandled,
+                manifest.Files.Count,
+                "files"));
+
             using var fileHasher = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
             long reconstructedSize = 0;
             bool hasMissingChunk = false;
 
             foreach (var chunk in file.Chunks)
             {
+                cancellationToken.ThrowIfCancellationRequested();
+
                 string normalizedChunkId;
                 try
                 {
@@ -318,15 +378,38 @@ public class SnapshotIntegrityVerifier(ILogger logger, IStorage storage, IPasswo
                     continue;
                 }
 
-                if (!verifiedChunks.TryGetValue(normalizedChunkId, out var chunkBytes))
+                // Already reported by the chunk pass; don't re-download a known-bad object.
+                if (!verifiedChunkIds.Contains(normalizedChunkId))
                 {
                     hasMissingChunk = true;
+                    continue;
+                }
+
+                byte[] chunkBytes;
+                try
+                {
+                    chunkBytes = await LoadPlaintextChunkAsync(
+                        normalizedChunkId,
+                        chunkStorageNamespace,
+                        manifest.EncryptionEnabled,
+                        encryptionMasterKey,
+                        tempDirectory,
+                        chunkCache,
+                        cancellationToken);
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    hasMissingChunk = true;
+                    result.Errors.Add(
+                        $"File '{file.RelativePath}' could not read chunk '{normalizedChunkId}': {ex.Message}");
                     continue;
                 }
 
                 fileHasher.AppendData(chunkBytes);
                 reconstructedSize += chunkBytes.Length;
             }
+
+            filesHandled++;
 
             if (hasMissingChunk)
             {
@@ -350,6 +433,99 @@ public class SnapshotIntegrityVerifier(ILogger logger, IStorage storage, IPasswo
                 result.Errors.Add(
                     $"File size mismatch for '{file.RelativePath}'. Expected {file.SizeBytes}, actual {reconstructedSize}.");
             }
+        }
+    }
+
+    private async Task<byte[]> LoadPlaintextChunkAsync(
+        string normalizedChunkId,
+        string? chunkStorageNamespace,
+        bool encrypted,
+        byte[]? encryptionMasterKey,
+        string tempDirectory,
+        ChunkByteCache chunkCache,
+        CancellationToken cancellationToken = default)
+    {
+        if (chunkCache.TryGetValue(normalizedChunkId, out var cached))
+        {
+            return cached;
+        }
+
+        var remoteChunkPath = SnapshotStoragePaths.GetChunkPath(normalizedChunkId, chunkStorageNamespace);
+        var tempChunkPath = Path.Combine(tempDirectory, $"{normalizedChunkId}.verify.chunk");
+
+        try
+        {
+            await _storage.DownloadAsync(remoteChunkPath, tempChunkPath);
+
+            var storedBytes = await File.ReadAllBytesAsync(tempChunkPath, cancellationToken);
+            var plainBytes = encrypted
+                ? EncryptionService.DecryptChunkDeterministic(storedBytes, encryptionMasterKey!, normalizedChunkId)
+                : storedBytes;
+
+            chunkCache.Set(normalizedChunkId, plainBytes);
+            return plainBytes;
+        }
+        finally
+        {
+            TryDeleteTemporaryFile(tempChunkPath);
+        }
+    }
+
+    /// <summary>Size-bounded LRU over plaintext chunk bytes.</summary>
+    private sealed class ChunkByteCache(long maxBytes)
+    {
+        private readonly long _maxBytes = Math.Max(0, maxBytes);
+        private readonly Dictionary<string, LinkedListNode<CacheEntry>> _entries = new(StringComparer.OrdinalIgnoreCase);
+        private readonly LinkedList<CacheEntry> _lru = [];
+        private long _currentBytes;
+
+        public bool TryGetValue(string chunkId, out byte[] bytes)
+        {
+            if (_entries.TryGetValue(chunkId, out var node))
+            {
+                _lru.Remove(node);
+                _lru.AddFirst(node);
+                bytes = node.Value.Bytes;
+                return true;
+            }
+
+            bytes = [];
+            return false;
+        }
+
+        public void Set(string chunkId, byte[] bytes)
+        {
+            if (_maxBytes == 0 || bytes.LongLength > _maxBytes)
+            {
+                return;
+            }
+
+            if (_entries.TryGetValue(chunkId, out var existing))
+            {
+                _currentBytes -= existing.Value.SizeBytes;
+                _lru.Remove(existing);
+                _entries.Remove(chunkId);
+            }
+
+            var node = new LinkedListNode<CacheEntry>(new CacheEntry(chunkId, bytes));
+            _lru.AddFirst(node);
+            _entries[chunkId] = node;
+            _currentBytes += node.Value.SizeBytes;
+
+            while (_currentBytes > _maxBytes && _lru.Last != null)
+            {
+                var evicted = _lru.Last;
+                _lru.RemoveLast();
+                _entries.Remove(evicted.Value.ChunkId);
+                _currentBytes -= evicted.Value.SizeBytes;
+            }
+        }
+
+        private sealed class CacheEntry(string chunkId, byte[] bytes)
+        {
+            public string ChunkId { get; } = chunkId;
+            public byte[] Bytes { get; } = bytes;
+            public long SizeBytes { get; } = bytes.LongLength;
         }
     }
 
@@ -377,9 +553,20 @@ public class SnapshotIntegrityVerifier(ILogger logger, IStorage storage, IPasswo
 
     private static void TryDeleteTemporaryFile(string path)
     {
-        if (File.Exists(path))
+        // Runs in a finally on the per-chunk path. A transient lock (indexer, AV scanner) must
+        // not turn a passing verification into a thrown exception.
+        try
         {
-            File.Delete(path);
+            if (File.Exists(path))
+            {
+                File.Delete(path);
+            }
+        }
+        catch (IOException)
+        {
+        }
+        catch (UnauthorizedAccessException)
+        {
         }
     }
 

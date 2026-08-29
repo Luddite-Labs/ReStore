@@ -1,4 +1,4 @@
-using System.Collections.ObjectModel;
+﻿using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
@@ -10,6 +10,7 @@ using ReStore.Core.src.core;
 using ReStore.Core.src.storage;
 using ReStore.Core.src.utils;
 using ReStore.Services;
+using ReStore.Views.Windows;
 
 namespace ReStore.Views.Pages
 {
@@ -30,9 +31,16 @@ namespace ReStore.Views.Pages
         public BackupArtifactType ArtifactType { get; set; } = BackupArtifactType.Archive;
         public List<string> ChunkIds { get; set; } = [];
         public string? ChunkStorageNamespace { get; set; }
+        public bool Encrypted { get; set; }
+        public string? Label { get; set; }
 
-        public string TypeLabel => CanVerify ? "Snapshot" : IsDiff ? "Differential" : "Full";
-        public string SizeLabel => FormatBytes(SizeBytes);
+        public string LabelDisplay => string.IsNullOrWhiteSpace(Label) ? string.Empty : Label;
+        public Visibility LabelVisibility => string.IsNullOrWhiteSpace(Label) ? Visibility.Collapsed : Visibility.Visible;
+
+        public string TypeLabel => CanVerify
+            ? (Encrypted ? "Snapshot (encrypted)" : "Snapshot")
+            : IsDiff ? "Differential" : "Full";
+        public string SizeLabel => SizeBytes == 0 ? "Unknown" : ByteFormatter.Format(SizeBytes);
         public string TimestampLabel => $"{Timestamp.ToUniversalTime():MMM dd, yyyy HH:mm:ss} UTC";
         public string StatusText => DateTime.UtcNow - Timestamp.ToUniversalTime() < TimeSpan.FromDays(7) ? "Recent" : "Archived";
         public Brush StatusColor => DateTime.UtcNow - Timestamp.ToUniversalTime() < TimeSpan.FromDays(7) ? _recentBrush : _archivedBrush;
@@ -78,20 +86,6 @@ namespace ReStore.Views.Pages
         }
 
         public event PropertyChangedEventHandler? PropertyChanged;
-
-        private static string FormatBytes(long bytes)
-        {
-            if (bytes == 0) return "Unknown";
-            string[] sizes = { "B", "KB", "MB", "GB", "TB" };
-            int order = 0;
-            double size = bytes;
-            while (size >= 1024 && order < sizes.Length - 1)
-            {
-                order++;
-                size /= 1024;
-            }
-            return $"{size:0.##} {sizes[order]}";
-        }
 
         private static bool IsSnapshotArtifactPath(string? path)
         {
@@ -147,21 +141,22 @@ namespace ReStore.Views.Pages
 
     public partial class BackupsPage : Page
     {
-        private readonly ConfigManager _configManager;
-        private readonly Logger _logger = new();
+        private readonly Logger _logger = AppServices.Logger;
+        private ConfigManager _configManager = null!;
         private SystemState? _state;
         private readonly ObservableCollection<BackupItem> _backups = [];
         private List<BackupItem> _allBackups = [];
+        private bool _initialized;
 
         public BackupsPage()
         {
             InitializeComponent();
-            _configManager = new ConfigManager(_logger);
 
             BackupsList.ItemsSource = _backups;
 
             SearchBox.TextChanged += (_, __) => ApplyFilters();
             FilterTypeCombo.SelectionChanged += (_, __) => ApplyFilters();
+            FilterStorageCombo.SelectionChanged += (_, __) => ApplyFilters();
             SortCombo.SelectionChanged += (_, __) => ApplyFilters();
             RefreshBtn.Click += async (_, __) => await LoadBackupsAsync();
 
@@ -169,22 +164,14 @@ namespace ReStore.Views.Pages
             DeleteSelectedBtn.Click += async (_, __) => await DeleteSelectedAsync();
             SelectAllBtn.Click += (_, __) => SelectAll();
             DeselectAllBtn.Click += (_, __) => DeselectAll();
-            Unloaded += Page_Unloaded;
-
-            _ = InitializeAsync();
-        }
-
-        private void Page_Unloaded(object sender, RoutedEventArgs e)
-        {
         }
 
         private async Task InitializeAsync()
         {
             try
             {
-                await _configManager.LoadAsync();
-                _state = new SystemState(_logger);
-                await _state.LoadStateAsync();
+                _configManager = await AppServices.GetConfigManagerAsync();
+                _state = await AppServices.GetSystemStateAsync();
 
                 await LoadBackupsAsync();
             }
@@ -194,7 +181,7 @@ namespace ReStore.Views.Pages
             }
         }
 
-        private void Page_Loaded(object sender, RoutedEventArgs e)
+        private async void Page_Loaded(object sender, RoutedEventArgs e)
         {
             var storyboard = new System.Windows.Media.Animation.Storyboard();
 
@@ -209,17 +196,22 @@ namespace ReStore.Views.Pages
             System.Windows.Media.Animation.Storyboard.SetTargetProperty(fadeIn, new PropertyPath(UIElement.OpacityProperty));
             storyboard.Children.Add(fadeIn);
             storyboard.Begin(this);
+
+            if (!_initialized)
+            {
+                _initialized = true;
+                await InitializeAsync();
+            }
         }
 
         private async Task LoadBackupsAsync()
         {
             if (_state == null) return;
-
             await Task.Run(() =>
             {
                 var items = new List<BackupItem>();
 
-                foreach (var kvp in _state.BackupHistory)
+                foreach (var kvp in _state.GetBackupHistorySnapshot())
                 {
                     if (IsSystemBackupGroup(kvp.Key))
                     {
@@ -246,6 +238,8 @@ namespace ReStore.Views.Pages
                             ArtifactType = backup.ArtifactType,
                             ChunkIds = [.. backup.ChunkIds],
                             ChunkStorageNamespace = backup.ChunkStorageNamespace,
+                            Encrypted = backup.Encrypted,
+                            Label = backup.Label,
                             IsSelected = false
                         });
                     }
@@ -253,10 +247,32 @@ namespace ReStore.Views.Pages
 
                 Dispatcher.Invoke(() =>
                 {
+                    foreach (var backup in _allBackups)
+                    {
+                        backup.PropertyChanged -= BackupItem_PropertyChanged;
+                    }
+
+                    foreach (var backup in items)
+                    {
+                        backup.PropertyChanged += BackupItem_PropertyChanged;
+                    }
+
                     _allBackups = items;
+                    RefreshStorageFilterOptions();
                     ApplyFilters();
                 });
             });
+        }
+
+        private void BackupItem_PropertyChanged(object? sender, PropertyChangedEventArgs e)
+        {
+            if (e.PropertyName != nameof(BackupItem.IsSelected))
+            {
+                return;
+            }
+
+            UpdateStats();
+            UpdateSelectionButtons();
         }
 
         private void ApplyFilters()
@@ -273,12 +289,23 @@ namespace ReStore.Views.Pages
             if (FilterTypeCombo.SelectedItem is ComboBoxItem filterItem)
             {
                 var filterTag = filterItem.Tag?.ToString();
+                var now = DateTime.UtcNow;
+
                 filtered = filterTag switch
                 {
-                    "full" => filtered.Where(b => !b.IsDiff),
-                    "diff" => filtered.Where(b => b.IsDiff),
+                    "encrypted" => filtered.Where(b => b.Encrypted),
+                    "plain" => filtered.Where(b => !b.Encrypted),
+                    "recent" => filtered.Where(b => now - b.Timestamp.ToUniversalTime() <= TimeSpan.FromDays(7)),
+                    "old" => filtered.Where(b => now - b.Timestamp.ToUniversalTime() > TimeSpan.FromDays(30)),
                     _ => filtered
                 };
+            }
+
+            if (FilterStorageCombo.SelectedItem is ComboBoxItem storageItem
+                && storageItem.Tag?.ToString() is { } storageTag
+                && storageTag != "all")
+            {
+                filtered = filtered.Where(b => string.Equals(b.StorageType, storageTag, StringComparison.OrdinalIgnoreCase));
             }
 
             if (SortCombo.SelectedItem is ComboBoxItem sortItem)
@@ -289,6 +316,7 @@ namespace ReStore.Views.Pages
                     "oldest" => filtered.OrderBy(b => b.Timestamp),
                     "dir_asc" => filtered.OrderBy(b => b.Directory),
                     "dir_desc" => filtered.OrderByDescending(b => b.Directory),
+                    "size_desc" => filtered.OrderByDescending(b => b.SizeBytes),
                     _ => filtered.OrderByDescending(b => b.Timestamp)
                 };
             }
@@ -303,6 +331,30 @@ namespace ReStore.Views.Pages
             UpdateSelectionButtons();
         }
 
+        /// <summary>Rebuilds the provider dropdown from what history actually contains.</summary>
+        private void RefreshStorageFilterOptions()
+        {
+            var previousTag = (FilterStorageCombo.SelectedItem as ComboBoxItem)?.Tag?.ToString() ?? "all";
+
+            FilterStorageCombo.Items.Clear();
+            FilterStorageCombo.Items.Add(new ComboBoxItem { Content = "All Providers", Tag = "all" });
+
+            foreach (var storageType in _allBackups
+                .Select(backup => backup.StorageType)
+                .Where(storageType => !string.IsNullOrWhiteSpace(storageType))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(storageType => storageType, StringComparer.OrdinalIgnoreCase))
+            {
+                FilterStorageCombo.Items.Add(new ComboBoxItem { Content = storageType, Tag = storageType });
+            }
+
+            var restored = FilterStorageCombo.Items
+                .OfType<ComboBoxItem>()
+                .FirstOrDefault(item => string.Equals(item.Tag?.ToString(), previousTag, StringComparison.OrdinalIgnoreCase));
+
+            FilterStorageCombo.SelectedItem = restored ?? FilterStorageCombo.Items[0];
+        }
+
         private void UpdateStats()
         {
             var total = _backups.Count;
@@ -311,12 +363,31 @@ namespace ReStore.Views.Pages
 
             if (selected > 0)
             {
-                StatsText.Text = $"{selected} of {total} selected • {FormatBytes(totalSize)} total";
+                StatsText.Text = $"{selected} of {total} selected • {ByteFormatter.Format(totalSize)} total";
             }
             else
             {
-                StatsText.Text = $"{total} backups • {FormatBytes(totalSize)} total";
+                StatsText.Text = $"{total} backups • {ByteFormatter.Format(totalSize)} total";
             }
+
+            UpdateStorageBreakdown();
+        }
+
+        private void UpdateStorageBreakdown()
+        {
+            if (_backups.Count == 0)
+            {
+                StorageBreakdownText.Text = string.Empty;
+                return;
+            }
+
+            var breakdown = _backups
+                .GroupBy(backup => string.IsNullOrWhiteSpace(backup.StorageType) ? "unknown" : backup.StorageType,
+                    StringComparer.OrdinalIgnoreCase)
+                .OrderByDescending(group => group.Sum(backup => backup.SizeBytes))
+                .Select(group => $"{group.Key}: {group.Count()} • {ByteFormatter.Format(group.Sum(backup => backup.SizeBytes))}");
+
+            StorageBreakdownText.Text = "By provider — " + string.Join("   |   ", breakdown);
         }
 
         private void UpdateSelectionButtons()
@@ -346,19 +417,19 @@ namespace ReStore.Views.Pages
             UpdateSelectionButtons();
         }
 
-        private void RestoreBackup_Click(object sender, RoutedEventArgs e)
+        private async void RestoreBackup_Click(object sender, RoutedEventArgs e)
         {
             if (sender is Button button && button.Tag is BackupItem backup)
             {
-                _ = RestoreSingleBackupAsync(backup);
+                await RestoreSingleBackupAsync(backup);
             }
         }
 
-        private void VerifyBackup_Click(object sender, RoutedEventArgs e)
+        private async void VerifyBackup_Click(object sender, RoutedEventArgs e)
         {
             if (sender is Button button && button.Tag is BackupItem backup)
             {
-                _ = VerifySingleBackupAsync(backup);
+                await VerifySingleBackupAsync(backup);
             }
         }
 
@@ -384,37 +455,69 @@ namespace ReStore.Views.Pages
                     return;
                 }
 
-                var dialog = new OpenFileDialog
+                var dialog = new OpenFolderDialog
                 {
-                    ValidateNames = false,
-                    CheckFileExists = false,
-                    CheckPathExists = false,
-                    FileName = "Select Folder",
-                    Title = "Select restore destination folder"
+                    Title = "Select restore destination folder",
+                    Multiselect = false
                 };
 
-                if (dialog.ShowDialog() == true)
+                if (dialog.ShowDialog() != true)
                 {
-                    var targetPath = Path.GetDirectoryName(dialog.FileName);
-                    if (string.IsNullOrEmpty(targetPath)) return;
+                    return;
+                }
 
-                    var result = MessageBox.Show(
-                        $"Restore backup:\n\n{backup.Directory}\n{backup.TimestampLabel}\n{backup.TypeLabel}\n\nTo: {targetPath}",
-                        "Confirm Restore",
-                        MessageBoxButton.YesNo,
-                        MessageBoxImage.Question);
+                var targetPath = dialog.FolderName;
+                if (string.IsNullOrEmpty(targetPath)) return;
 
-                    if (result == MessageBoxResult.Yes)
-                    {
-                        using var storage = await CreateStorageForBackupAsync(backup);
-                        var passwordProvider = App.GlobalPasswordProvider ?? new GuiPasswordProvider();
-                        passwordProvider.SetEncryptionMode(false);
-                        var restore = new Restore(_logger, storage, passwordProvider, _state);
-                        await restore.RestoreFromBackupAsync(backup.Path, targetPath);
-                        await SaveStateSafelyAsync("restore telemetry");
+                var passwordProvider = App.GlobalPasswordProvider ?? new GuiPasswordProvider();
+                passwordProvider.SetEncryptionMode(false);
 
-                        MessageBox.Show("Restore completed successfully!", "Success", MessageBoxButton.OK, MessageBoxImage.Information);
-                    }
+                // Preview first: the user sees exactly which existing files are at risk
+                // before anything is written.
+                RestorePreview preview;
+                using (var previewStorage = await CreateStorageForBackupAsync(backup))
+                {
+                    var previewRestore = new Restore(_logger, previewStorage, passwordProvider, _state);
+                    preview = await previewRestore.PreviewRestoreAsync(backup.Path, targetPath);
+                }
+
+                var confirm = new RestoreConfirmWindow(preview) { Owner = Window.GetWindow(this) };
+                if (confirm.ShowDialog() != true || !confirm.Confirmed)
+                {
+                    return;
+                }
+
+                var progressWindow = new OperationProgressWindow($"Restoring {backup.Directory}", _logger);
+                progressWindow.RunModal(Window.GetWindow(this), async token =>
+                {
+                    using var storage = await CreateStorageForBackupAsync(backup);
+                    var restore = new Restore(progressWindow, storage, passwordProvider, _state);
+
+                    var outcome = await restore.RestoreFromBackupAsync(
+                        backup.Path,
+                        targetPath,
+                        new RestoreOptions
+                        {
+                            ConflictPolicy = confirm.ConflictPolicy,
+                            RelativePaths = confirm.SelectedRelativePaths
+                        },
+                        progressWindow.RestoreProgress,
+                        token);
+
+                    progressWindow.Log(
+                        $"Restored {outcome.FilesRestored} file(s); skipped {outcome.FilesSkipped}, kept both {outcome.FilesKeptBoth}, overwrote {outcome.FilesOverwritten}.",
+                        LogLevel.Info);
+                });
+
+                await SaveStateSafelyAsync("restore telemetry");
+
+                if (progressWindow.Succeeded)
+                {
+                    MessageBox.Show("Restore completed successfully!", "Success", MessageBoxButton.OK, MessageBoxImage.Information);
+                }
+                else if (progressWindow.Failure != null)
+                {
+                    MessageBox.Show($"Restore failed: {progressWindow.Failure.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
                 }
             }
             catch (Exception ex)
@@ -449,13 +552,36 @@ namespace ReStore.Views.Pages
 
             try
             {
-                using var storage = await CreateStorageForBackupAsync(backup);
                 var passwordProvider = App.GlobalPasswordProvider ?? new GuiPasswordProvider();
                 passwordProvider.SetEncryptionMode(false);
 
-                var verifier = new SnapshotIntegrityVerifier(_logger, storage, passwordProvider, _state);
-                var verificationResult = await verifier.VerifyAsync(backup.Path);
+                SnapshotVerificationResult? verificationResult = null;
+
+                var progressWindow = new OperationProgressWindow($"Verifying {backup.Directory}", _logger);
+                progressWindow.RunModal(Window.GetWindow(this), async token =>
+                {
+                    using var storage = await CreateStorageForBackupAsync(backup);
+                    var verifier = new SnapshotIntegrityVerifier(progressWindow, storage, passwordProvider, _state);
+                    verificationResult = await verifier.VerifyAsync(backup.Path, progressWindow.VerificationProgress, token);
+                });
+
                 await SaveStateSafelyAsync("verification telemetry");
+
+                if (progressWindow.WasCancelled)
+                {
+                    return;
+                }
+
+                if (progressWindow.Failure != null)
+                {
+                    MessageBox.Show($"Verification failed: {progressWindow.Failure.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                    return;
+                }
+
+                if (verificationResult == null)
+                {
+                    return;
+                }
 
                 if (verificationResult.IsValid)
                 {
@@ -489,6 +615,39 @@ namespace ReStore.Views.Pages
             }
         }
 
+        private async void LabelBackup_Click(object sender, RoutedEventArgs e)
+        {
+            if (sender is not Button button || button.Tag is not BackupItem backup)
+            {
+                return;
+            }
+
+            var dialog = new TextInputWindow(
+                "Label restore point",
+                $"Name this restore point so it is easy to find later.\n\n{backup.Directory} — {backup.TimestampLabel}",
+                backup.Label,
+                "For example: 'before Windows reinstall'. Leave empty to remove the label.")
+            {
+                Owner = Window.GetWindow(this)
+            };
+
+            if (dialog.ShowDialog() != true || _state == null)
+            {
+                return;
+            }
+
+            var label = string.IsNullOrWhiteSpace(dialog.Value) ? null : dialog.Value.Trim();
+
+            if (!_state.SetBackupLabel(backup.Group, backup.Path, label))
+            {
+                MessageBox.Show("Could not find this backup in the history.", "Label", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+
+            await SaveStateSafelyAsync("backup label");
+            await LoadBackupsAsync();
+        }
+
         private async Task RestoreSelectedAsync()
         {
             var selected = _backups.Where(b => b.IsSelected).ToList();
@@ -509,11 +668,11 @@ namespace ReStore.Views.Pages
             }
         }
 
-        private void DeleteBackup_Click(object sender, RoutedEventArgs e)
+        private async void DeleteBackup_Click(object sender, RoutedEventArgs e)
         {
             if (sender is Button button && button.Tag is BackupItem backup)
             {
-                _ = DeleteSingleBackupAsync(backup);
+                await DeleteSingleBackupAsync(backup);
             }
         }
 
@@ -597,6 +756,7 @@ namespace ReStore.Views.Pages
             if (sender is Button button && button.Tag is BackupItem backup)
             {
                 var details = $"Directory: {backup.Directory}\n\n" +
+                             (string.IsNullOrWhiteSpace(backup.Label) ? "" : $"Label: {backup.Label}\n\n") +
                              $"Path: {backup.DisplayPath}\n\n" +
                              $"Timestamp: {backup.TimestampLabel}\n\n" +
                              $"Type: {backup.TypeLabel}\n\n" +
@@ -605,20 +765,6 @@ namespace ReStore.Views.Pages
 
                 MessageBox.Show(details, "Backup Details", MessageBoxButton.OK, MessageBoxImage.Information);
             }
-        }
-
-        private static string FormatBytes(long bytes)
-        {
-            if (bytes == 0) return "0 B";
-            string[] sizes = { "B", "KB", "MB", "GB", "TB" };
-            int order = 0;
-            double size = bytes;
-            while (size >= 1024 && order < sizes.Length - 1)
-            {
-                order++;
-                size /= 1024;
-            }
-            return $"{size:0.##} {sizes[order]}";
         }
 
         private async Task SaveStateSafelyAsync(string context)

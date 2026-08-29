@@ -64,7 +64,7 @@ public class ConfigInitializerTests
     public void ResolveApplicationExampleConfigPath_WithExplicitAssemblyPath_ShouldUseInAppConfigFirst()
     {
         var testRoot = Path.Combine(Path.GetTempPath(), "ReStoreConfigInitializer_" + Guid.NewGuid().ToString("N"));
-        var assemblyDir = Path.Combine(testRoot, "bin", "Debug", "net9.0");
+        var assemblyDir = Path.Combine(testRoot, "bin", "Debug", "net10.0");
         Directory.CreateDirectory(Path.Combine(assemblyDir, "config"));
 
         try
@@ -93,7 +93,7 @@ public class ConfigInitializerTests
     {
         var testRoot = Path.Combine(Path.GetTempPath(), "ReStoreConfigInitializer_" + Guid.NewGuid().ToString("N"));
         var projectRoot = Path.Combine(testRoot, "ReStore.Core");
-        var assemblyDir = Path.Combine(projectRoot, "bin", "Debug", "net9.0");
+        var assemblyDir = Path.Combine(projectRoot, "bin", "Debug", "net10.0");
         Directory.CreateDirectory(assemblyDir);
         Directory.CreateDirectory(Path.Combine(projectRoot, "config"));
 
@@ -123,7 +123,7 @@ public class ConfigInitializerTests
     {
         var testRoot = Path.Combine(Path.GetTempPath(), "ReStoreConfigInitializer_" + Guid.NewGuid().ToString("N"));
         var projectRoot = Path.Combine(testRoot, "ReStore");
-        var assemblyDir = Path.Combine(projectRoot, "bin", "Release", "net9.0-windows");
+        var assemblyDir = Path.Combine(projectRoot, "bin", "Release", "net10.0-windows");
         Directory.CreateDirectory(assemblyDir);
         Directory.CreateDirectory(Path.Combine(projectRoot, "config"));
 

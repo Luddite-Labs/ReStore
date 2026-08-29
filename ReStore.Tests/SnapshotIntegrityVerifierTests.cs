@@ -1,8 +1,9 @@
-using FluentAssertions;
+﻿using FluentAssertions;
 using Moq;
 using ReStore.Core.src.backup;
 using ReStore.Core.src.core;
 using ReStore.Core.src.monitoring;
+using ReStore.Core.src.storage;
 using ReStore.Core.src.storage.local;
 using ReStore.Core.src.utils;
 using System.Text.Json;
@@ -172,6 +173,67 @@ public class SnapshotIntegrityVerifierTests : IDisposable
         state.Telemetry.Verification.SuccessCount.Should().Be(result.IsValid ? 1 : 0);
         state.Telemetry.Verification.FileCount.Should().Be(result.FileCount);
         state.Telemetry.Verification.ChunkReferences.Should().Be(result.ChunkReferences);
+    }
+
+    [Fact]
+    public async Task VerifyAsync_ShouldNotAccumulatePlaintextChunks_InTempDirectory()
+    {
+        // Chunks are fetched on demand, so peak temp usage stays at one chunk instead of
+        // scaling with the whole snapshot.
+        var snapshot = await CreateSnapshotAsync(encrypted: false);
+        var probe = new TempDirectoryProbingStorage(snapshot.Storage);
+        var verifier = new SnapshotIntegrityVerifier(_logger, probe);
+
+        var result = await verifier.VerifyAsync(snapshot.ManifestPath);
+
+        result.IsValid.Should().BeTrue();
+        probe.PeakChunkFileCount.Should().BeLessThanOrEqualTo(1,
+            "at most one chunk should be staged on disk at any moment");
+    }
+
+    [Fact]
+    public async Task VerifyAsync_ShouldLeaveNoTempDirectoryBehind()
+    {
+        var snapshot = await CreateSnapshotAsync(encrypted: false);
+        var verifier = new SnapshotIntegrityVerifier(_logger, snapshot.Storage);
+
+        await verifier.VerifyAsync(snapshot.ManifestPath);
+
+        Directory.GetDirectories(Path.GetTempPath(), "restore_verify_*")
+            .Should().BeEmpty("the verifier must clean up its scratch directory");
+    }
+
+    /// <summary>Counts chunk files staged in the verifier's temp dir after each download.</summary>
+    private sealed class TempDirectoryProbingStorage(IStorage inner) : IStorage
+    {
+        private readonly IStorage _inner = inner;
+
+        public int PeakChunkFileCount { get; private set; }
+
+        public async Task DownloadAsync(string remotePath, string localPath)
+        {
+            await _inner.DownloadAsync(remotePath, localPath);
+
+            var directory = Path.GetDirectoryName(localPath);
+            if (string.IsNullOrEmpty(directory) || !Directory.Exists(directory))
+            {
+                return;
+            }
+
+            var staged = Directory.GetFiles(directory, "*.chunk").Length;
+            if (staged > PeakChunkFileCount)
+            {
+                PeakChunkFileCount = staged;
+            }
+        }
+
+        public Task InitializeAsync(Dictionary<string, string> options) => _inner.InitializeAsync(options);
+        public Task UploadAsync(string localPath, string remotePath) => _inner.UploadAsync(localPath, remotePath);
+        public Task<bool> ExistsAsync(string remotePath) => _inner.ExistsAsync(remotePath);
+        public Task DeleteAsync(string remotePath) => _inner.DeleteAsync(remotePath);
+        public Task<string> GenerateShareLinkAsync(string remotePath, TimeSpan expiration) => _inner.GenerateShareLinkAsync(remotePath, expiration);
+        public bool SupportsSharing => _inner.SupportsSharing;
+        public void Dispose() => _inner.Dispose();
     }
 
     private async Task<SnapshotTestContext> CreateSnapshotAsync(bool encrypted)

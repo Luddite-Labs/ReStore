@@ -1,0 +1,90 @@
+<Window x:Class="ReStore.Views.Windows.OperationProgressWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:shell="clr-namespace:System.Windows.Shell;assembly=PresentationFramework" Title="Operation Progress" Height="440" Width="640" WindowStartupLocation="CenterOwner" WindowStyle="None" ResizeMode="NoResize" TextOptions.TextFormattingMode="Display" TextOptions.TextRenderingMode="ClearType" Background="{DynamicResource ApplicationBackgroundBrush}" UseLayoutRounding="True">
+
+    <shell:WindowChrome.WindowChrome>
+        <shell:WindowChrome CaptionHeight="32" CornerRadius="8" GlassFrameThickness="0" ResizeBorderThickness="0"/>
+    </shell:WindowChrome.WindowChrome>
+
+    <Border BorderThickness="1" BorderBrush="{DynamicResource ControlStrokeColorDefaultBrush}" CornerRadius="8">
+        <Grid>
+            <Grid.RowDefinitions>
+                <RowDefinition Height="32"/>
+                <RowDefinition Height="*"/>
+                <RowDefinition Height="Auto"/>
+            </Grid.RowDefinitions>
+
+            <Grid Grid.Row="0" Background="{DynamicResource ApplicationBackgroundBrush}" shell:WindowChrome.IsHitTestVisibleInChrome="True">
+                <TextBlock x:Name="TitleText" Text="Operation Progress" VerticalAlignment="Center" Margin="16,0" FontWeight="SemiBold" Foreground="{DynamicResource TextFillColorPrimaryBrush}"/>
+            </Grid>
+
+            <Grid Grid.Row="1" Margin="24">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="*"/>
+                </Grid.RowDefinitions>
+
+                <Border Grid.Row="0" Padding="16" Background="{DynamicResource CardBackgroundFillColorDefaultBrush}" CornerRadius="8" Margin="0,0,0,16">
+                    <StackPanel>
+                        <TextBlock x:Name="StatusText" Text="Starting..." FontSize="16" FontWeight="SemiBold" Margin="0,0,0,8" Foreground="{DynamicResource TextFillColorPrimaryBrush}"/>
+                        <ProgressBar x:Name="ProgressBar" Height="6" IsIndeterminate="True" Margin="0,0,0,8"/>
+                        <TextBlock x:Name="DetailText" Text="" TextTrimming="CharacterEllipsis" Foreground="{DynamicResource TextFillColorSecondaryBrush}" FontSize="13"/>
+                    </StackPanel>
+                </Border>
+
+                <Grid Grid.Row="1" Margin="0,0,0,16">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="*"/>
+                    </Grid.ColumnDefinitions>
+
+                    <Border Grid.Column="0" Padding="12" Background="{DynamicResource CardBackgroundFillColorDefaultBrush}" CornerRadius="6" Margin="0,0,8,0">
+                        <StackPanel>
+                            <TextBlock Text="Files" FontSize="12" Foreground="{DynamicResource TextFillColorSecondaryBrush}" Margin="0,0,0,4"/>
+                            <TextBlock x:Name="FileCountText" Text="0 / 0" FontSize="20" FontWeight="Bold" Foreground="{DynamicResource TextFillColorPrimaryBrush}"/>
+                        </StackPanel>
+                    </Border>
+
+                    <Border Grid.Column="1" Padding="12" Background="{DynamicResource CardBackgroundFillColorDefaultBrush}" CornerRadius="6" Margin="4,0">
+                        <StackPanel>
+                            <TextBlock Text="Data" FontSize="12" Foreground="{DynamicResource TextFillColorSecondaryBrush}" Margin="0,0,0,4"/>
+                            <TextBlock x:Name="BytesText" Text="0 B" FontSize="20" FontWeight="Bold" Foreground="{DynamicResource TextFillColorPrimaryBrush}"/>
+                        </StackPanel>
+                    </Border>
+
+                    <Border Grid.Column="2" Padding="12" Background="{DynamicResource CardBackgroundFillColorDefaultBrush}" CornerRadius="6" Margin="8,0,0,0">
+                        <StackPanel>
+                            <TextBlock Text="Phase" FontSize="12" Foreground="{DynamicResource TextFillColorSecondaryBrush}" Margin="0,0,0,4"/>
+                            <TextBlock x:Name="PhaseText" Text="-" FontSize="20" FontWeight="Bold" Foreground="{DynamicResource AccentFillColorDefaultBrush}"/>
+                        </StackPanel>
+                    </Border>
+                </Grid>
+
+                <Border Grid.Row="2" Background="{DynamicResource CardBackgroundFillColorDefaultBrush}" CornerRadius="8" Padding="16">
+                    <Grid>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="*"/>
+                        </Grid.RowDefinitions>
+
+                        <TextBlock Grid.Row="0" Text="Activity Log" FontWeight="SemiBold" Margin="0,0,0,12" Foreground="{DynamicResource TextFillColorPrimaryBrush}"/>
+
+                        <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
+                            <TextBox x:Name="LogBox" IsReadOnly="True" TextWrapping="Wrap" Background="Transparent" BorderThickness="0" FontFamily="Consolas" FontSize="11" Foreground="{DynamicResource TextFillColorSecondaryBrush}"/>
+                        </ScrollViewer>
+                    </Grid>
+                </Border>
+            </Grid>
+
+            <Border Grid.Row="2" Padding="24,16" Background="{DynamicResource CardBackgroundFillColorDefaultBrush}" BorderBrush="{DynamicResource ControlStrokeColorDefaultBrush}" BorderThickness="0,1,0,0">
+                <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                    <Button x:Name="CancelButton" Content="Cancel" Margin="0,0,8,0" Padding="16,6" Click="CancelBtn_Click"/>
+                    <Button x:Name="CloseButton" Content="Close" IsEnabled="False" Padding="16,6" Click="CloseBtn_Click"/>
+                </StackPanel>
+            </Border>
+        </Grid>
+    </Border>
+</Window>

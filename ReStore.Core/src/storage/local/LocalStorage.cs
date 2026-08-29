@@ -145,13 +145,16 @@ public class LocalStorage : StorageBase
     private string ResolveStoragePath(string remotePath)
     {
         var normalizedPath = remotePath
-            .Replace(Path.AltDirectorySeparatorChar, Path.DirectorySeparatorChar)
-            .TrimStart(Path.DirectorySeparatorChar);
+            .Replace('\\', Path.DirectorySeparatorChar)
+            .Replace('/', Path.DirectorySeparatorChar);
 
-        if (Path.IsPathRooted(normalizedPath))
+        if (Path.IsPathRooted(normalizedPath) || HasWindowsRoot(remotePath))
         {
             throw new InvalidOperationException($"Rooted remote paths are not allowed: {remotePath}");
         }
+
+        normalizedPath = normalizedPath
+            .TrimStart(Path.DirectorySeparatorChar);
 
         var resolvedPath = Path.GetFullPath(Path.Combine(_basePath, normalizedPath));
         var normalizedBasePath = _basePath.TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
@@ -162,6 +165,16 @@ public class LocalStorage : StorageBase
         }
 
         return resolvedPath;
+    }
+
+    private static bool HasWindowsRoot(string path)
+    {
+        if (path.Length < 2 || path[1] != ':')
+        {
+            return false;
+        }
+
+        return char.IsAsciiLetter(path[0]);
     }
 
     protected override void Dispose(bool disposing)

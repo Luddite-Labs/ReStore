@@ -17,7 +17,7 @@
         </StackPanel>
 
         <!-- Filters and Actions -->
-        <Border Grid.Row="1" Background="{DynamicResource CardBackgroundFillColorDefaultBrush}" CornerRadius="8" Padding="20" Margin="0,0,0,16" Effect="{StaticResource CardShadow}">
+        <Border Grid.Row="1" Background="{DynamicResource CardBackgroundFillColorDefaultBrush}" CornerRadius="8" Padding="20" Margin="0,0,0,16" Effect="{StaticResource CardShadow}" RenderOptions.ClearTypeHint="Enabled">
             <Grid>
                 <Grid.RowDefinitions>
                     <RowDefinition Height="Auto"/>
@@ -31,43 +31,52 @@
                         <ColumnDefinition Width="Auto"/>
                         <ColumnDefinition Width="Auto"/>
                         <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="Auto"/>
                     </Grid.ColumnDefinitions>
 
                     <TextBox x:Name="SearchBox" Grid.Column="0" MinWidth="300" ToolTip="Search by directory name" VerticalContentAlignment="Center" Padding="8"/>
 
                     <ComboBox x:Name="FilterTypeCombo" Grid.Column="1" MinWidth="150" Margin="12,0,0,0" VerticalContentAlignment="Center">
-                        <ComboBoxItem Content="All Types" Tag="all" IsSelected="True"/>
-                        <ComboBoxItem Content="Full Backups" Tag="full"/>
-                        <ComboBoxItem Content="Differential" Tag="diff"/>
+                        <ComboBoxItem Content="All Backups" Tag="all" IsSelected="True"/>
+                        <ComboBoxItem Content="Encrypted" Tag="encrypted"/>
+                        <ComboBoxItem Content="Not Encrypted" Tag="plain"/>
+                        <ComboBoxItem Content="Last 7 Days" Tag="recent"/>
+                        <ComboBoxItem Content="Older Than 30 Days" Tag="old"/>
                     </ComboBox>
 
-                    <ComboBox x:Name="SortCombo" Grid.Column="2" MinWidth="150" Margin="12,0,0,0" VerticalContentAlignment="Center">
+                    <ComboBox x:Name="FilterStorageCombo" Grid.Column="2" MinWidth="140" Margin="12,0,0,0" VerticalContentAlignment="Center" ToolTip="Filter by storage provider"/>
+
+                    <ComboBox x:Name="SortCombo" Grid.Column="3" MinWidth="150" Margin="12,0,0,0" VerticalContentAlignment="Center">
                         <ComboBoxItem Content="Newest First" Tag="newest" IsSelected="True"/>
                         <ComboBoxItem Content="Oldest First" Tag="oldest"/>
                         <ComboBoxItem Content="Directory A-Z" Tag="dir_asc"/>
                         <ComboBoxItem Content="Directory Z-A" Tag="dir_desc"/>
+                        <ComboBoxItem Content="Largest First" Tag="size_desc"/>
                     </ComboBox>
 
-                    <Button x:Name="RefreshBtn" Grid.Column="3" Content="🔄 Refresh" Padding="12,8" Margin="12,0,0,0" Cursor="Hand"/>
+                    <Button x:Name="RefreshBtn" Grid.Column="4" Content="🔄 Refresh" Padding="12,8" Margin="12,0,0,0" Cursor="Hand"/>
                 </Grid>
 
                 <!-- Action Buttons -->
-                <StackPanel Grid.Row="1" Orientation="Horizontal">
-                    <TextBlock Text="Selected Actions:" FontSize="13" FontWeight="Medium" VerticalAlignment="Center" Foreground="{DynamicResource TextFillColorPrimaryBrush}" Margin="0,0,12,0"/>
-                    <Button x:Name="RestoreSelectedBtn" Content="📥 Restore Selected" Padding="12,8" Cursor="Hand" IsEnabled="False"/>
-                    <Button x:Name="DeleteSelectedBtn" Content="🗑️ Delete Selected" Padding="12,8" Margin="12,0,0,0" Cursor="Hand" IsEnabled="False"/>
-                    <Button x:Name="SelectAllBtn" Content="Select All" Padding="12,8" Margin="12,0,0,0" Cursor="Hand"/>
-                    <Button x:Name="DeselectAllBtn" Content="Deselect All" Padding="12,8" Margin="12,0,0,0" Cursor="Hand"/>
+                <StackPanel Grid.Row="1">
+                    <StackPanel Orientation="Horizontal">
+                        <TextBlock Text="Selected Actions:" FontSize="13" FontWeight="Medium" VerticalAlignment="Center" Foreground="{DynamicResource TextFillColorPrimaryBrush}" Margin="0,0,12,0"/>
+                        <Button x:Name="RestoreSelectedBtn" Content="📥 Restore Selected" Padding="12,8" Cursor="Hand" IsEnabled="False"/>
+                        <Button x:Name="DeleteSelectedBtn" Content="🗑️ Delete Selected" Padding="12,8" Margin="12,0,0,0" Cursor="Hand" IsEnabled="False"/>
+                        <Button x:Name="SelectAllBtn" Content="Select All" Padding="12,8" Margin="12,0,0,0" Cursor="Hand"/>
+                        <Button x:Name="DeselectAllBtn" Content="Deselect All" Padding="12,8" Margin="12,0,0,0" Cursor="Hand"/>
 
-                    <Rectangle Width="1" Fill="{DynamicResource DividerStrokeColorDefaultBrush}" Margin="16,0"/>
+                        <Rectangle Width="1" Fill="{DynamicResource DividerStrokeColorDefaultBrush}" Margin="16,0"/>
 
-                    <TextBlock x:Name="StatsText" Text="0 backups" FontSize="12" VerticalAlignment="Center" Foreground="{DynamicResource TextFillColorSecondaryBrush}"/>
+                        <TextBlock x:Name="StatsText" Text="0 backups" FontSize="12" VerticalAlignment="Center" Foreground="{DynamicResource TextFillColorSecondaryBrush}"/>
+                    </StackPanel>
+                    <TextBlock x:Name="StorageBreakdownText" FontSize="11" Margin="0,8,0,0" TextWrapping="Wrap" Foreground="{DynamicResource TextFillColorTertiaryBrush}"/>
                 </StackPanel>
             </Grid>
         </Border>
 
         <!-- Backups List -->
-        <Border Grid.Row="2" Background="{DynamicResource CardBackgroundFillColorDefaultBrush}" CornerRadius="8" Padding="20" Effect="{StaticResource CardShadow}">
+        <Border Grid.Row="2" Background="{DynamicResource CardBackgroundFillColorDefaultBrush}" CornerRadius="8" Padding="20" Effect="{StaticResource CardShadow}" RenderOptions.ClearTypeHint="Enabled">
             <DockPanel>
                 <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,16">
                     <TextBlock FontFamily="{StaticResource IconFont}" Text="&#xE81C;" FontSize="18" VerticalAlignment="Center" Foreground="{DynamicResource AccentFillColorDefaultBrush}" Margin="0,0,8,0"/>
@@ -90,6 +99,7 @@
                                             <ColumnDefinition Width="Auto"/>
                                             <ColumnDefinition Width="Auto"/>
                                             <ColumnDefinition Width="Auto"/>
+                                            <ColumnDefinition Width="Auto"/>
                                         </Grid.ColumnDefinitions>
 
                                         <!-- Checkbox -->
@@ -102,7 +112,12 @@
 
                                         <!-- Info -->
                                         <StackPanel Grid.Column="2" VerticalAlignment="Center">
-                                            <TextBlock Text="{Binding Directory, Mode=OneWay}" FontSize="14" FontWeight="Medium" Foreground="{DynamicResource TextFillColorPrimaryBrush}"/>
+                                            <StackPanel Orientation="Horizontal">
+                                                <TextBlock Text="{Binding Directory, Mode=OneWay}" FontSize="14" FontWeight="Medium" Foreground="{DynamicResource TextFillColorPrimaryBrush}"/>
+                                                <Border Background="{DynamicResource AccentFillColorDefaultBrush}" CornerRadius="3" Padding="6,1" Margin="8,0,0,0" VerticalAlignment="Center" Visibility="{Binding LabelVisibility, Mode=OneWay}">
+                                                    <TextBlock Text="{Binding LabelDisplay, Mode=OneWay}" FontSize="10" FontWeight="SemiBold" Foreground="White"/>
+                                                </Border>
+                                            </StackPanel>
                                             <TextBlock FontSize="11" Foreground="{DynamicResource TextFillColorSecondaryBrush}" Margin="0,2,0,0">
                                                 <Run Text="{Binding TimestampLabel, Mode=OneWay}"/>
                                                 <Run Text="•"/>
@@ -120,10 +135,11 @@
 
                                         <!-- Action Buttons -->
                                         <Button Grid.Column="4" Content="📥" ToolTip="Restore" FontSize="16" Padding="8" Margin="0,0,4,0" Cursor="Hand" Tag="{Binding}" IsEnabled="{Binding CanRestore, Mode=OneWay}" Click="RestoreBackup_Click"/>
-                                        <Button Grid.Column="5" Content="📂" ToolTip="Open Backup Location" FontSize="16" Padding="8" Margin="0,0,4,0" Cursor="Hand" Tag="{Binding}" Visibility="{Binding OpenLocationVisibility, Mode=OneWay}" Click="OpenBackupLocation_Click"/>
-                                        <Button Grid.Column="6" Content="✅" ToolTip="Verify Snapshot" FontSize="16" Padding="8" Margin="0,0,4,0" Cursor="Hand" Tag="{Binding}" IsEnabled="{Binding CanVerify, Mode=OneWay}" Click="VerifyBackup_Click"/>
-                                        <Button Grid.Column="7" Content="ℹ️" ToolTip="Details" FontSize="16" Padding="8" Margin="0,0,4,0" Cursor="Hand" Tag="{Binding}" Click="ShowDetails_Click"/>
-                                        <Button Grid.Column="8" Content="🗑️" ToolTip="Delete" FontSize="16" Padding="8" Cursor="Hand" Tag="{Binding}" Click="DeleteBackup_Click"/>
+                                        <Button Grid.Column="5" Content="🏷️" ToolTip="Label this restore point" FontSize="16" Padding="8" Margin="0,0,4,0" Cursor="Hand" Tag="{Binding}" Click="LabelBackup_Click"/>
+                                        <Button Grid.Column="6" Content="📂" ToolTip="Open Backup Location" FontSize="16" Padding="8" Margin="0,0,4,0" Cursor="Hand" Tag="{Binding}" Visibility="{Binding OpenLocationVisibility, Mode=OneWay}" Click="OpenBackupLocation_Click"/>
+                                        <Button Grid.Column="7" Content="✅" ToolTip="Verify Snapshot" FontSize="16" Padding="8" Margin="0,0,4,0" Cursor="Hand" Tag="{Binding}" IsEnabled="{Binding CanVerify, Mode=OneWay}" Click="VerifyBackup_Click"/>
+                                        <Button Grid.Column="8" Content="ℹ️" ToolTip="Details" FontSize="16" Padding="8" Margin="0,0,4,0" Cursor="Hand" Tag="{Binding}" Click="ShowDetails_Click"/>
+                                        <Button Grid.Column="9" Content="🗑️" ToolTip="Delete" FontSize="16" Padding="8" Cursor="Hand" Tag="{Binding}" Click="DeleteBackup_Click"/>
                                     </Grid>
                                 </Border>
                             </DataTemplate>

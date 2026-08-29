@@ -10,6 +10,7 @@ public class GitHubStorage(ILogger logger) : StorageBase(logger)
     private string _repoName = string.Empty;
     private bool _disposed = false;
     private const long MAX_FILE_SIZE_BYTES = 100 * 1024 * 1024; // GitHub API limit: 100MB
+    private const long LARGE_FILE_WARNING_BYTES = 50 * 1024 * 1024;
 
     public override async Task InitializeAsync(Dictionary<string, string> options)
     {
@@ -54,6 +55,13 @@ public class GitHubStorage(ILogger logger) : StorageBase(logger)
             throw new InvalidOperationException(
                 $"File '{Path.GetFileName(localPath)}' is {fileInfo.Length / (1024 * 1024)}MB which exceeds GitHub's 100MB file size limit. " +
                 "Consider using a different storage provider for large backups.");
+        }
+
+        if (fileInfo.Length >= LARGE_FILE_WARNING_BYTES)
+        {
+            Logger.Log(
+                $"Uploading {Path.GetFileName(localPath)} through GitHub storage requires buffering and base64 encoding a {fileInfo.Length / (1024 * 1024)}MB file. Consider object storage for large backups.",
+                LogLevel.Warning);
         }
 
         var bytes = await File.ReadAllBytesAsync(localPath);

@@ -24,6 +24,10 @@ You can configure ReStore through the GUI settings page or by editing the config
 
 **Chunk Diffing**: Snapshot manifest version and chunking profile controls (`minChunkSizeKB`, `targetChunkSizeKB`, `maxChunkSizeKB`, rolling hash window, and safety limits).
 
+**Scheduled Verification**: Periodic integrity checks of recent snapshots per group. Disabled by default, and restricted to local storage unless you opt out.
+
+**Notifications**: Tray notifications for backup and verification failures, and for the first success after a run of failures.
+
 ## Configuration File Location
 
 Both the GUI and CLI applications use a **unified configuration** located at:
@@ -42,7 +46,7 @@ When you first launch ReStore (GUI or CLI), it will automatically:
 2. Copy the latest packaged `config.example.json` into `%USERPROFILE%\ReStore\config.example.json`
 3. Create `config.json` from the template (if not already present)
 4. You can then configure all settings through:
-   - **GUI**: Settings page with intuitive controls for all options
+   - **GUI**: Settings page, which covers every option
    - **Manual**: Edit `config.json` directly in a text editor
 
 ## Schema Versioning and Upgrades
@@ -58,6 +62,8 @@ Current compatibility behavior includes:
 - Legacy `backupType: Differential` is mapped to `ChunkSnapshot`
 - Missing `chunkDiffing` blocks are injected with safe defaults
 - Missing/invalid `encryption.keyDerivationIterations` is repaired to `1000000`
+- Missing `verification` blocks are injected disabled, with a 7-day interval and `localStorageOnly: true`
+- Missing `notifications` blocks are injected with failure notifications on and per-success notifications off
 
 You can validate your final config at any time with:
 
@@ -79,29 +85,32 @@ All application data is stored in a centralized user directory:
     └── system_state.json    (Backup metadata and history - auto-generated)
 ```
 
+Backup data itself goes to whatever the active storage provider points at. For local storage
+the default is `%USERPROFILE%\ReStoreBackups`, which is configurable.
+
 **Settings Available in GUI:**
 
 All configuration options can be managed through the Settings page:
 
 - **General Settings**: Theme, startup options, system tray integration
-- **Storage Providers**: Local, Google Drive, AWS S3, GitHub configuration
+- **Storage Providers**: Local, Google Drive, AWS S3, GitHub, Azure, GCP, Dropbox, SFTP, and Backblaze B2 configuration, each with a Test button
 - **Global Default Storage**: Set the default storage type for all backups
 - **Watch Directories**: Add/remove folders to monitor with individual storage selection per path
 - **Backup Configuration**: Type (Full/Incremental/ChunkSnapshot), interval, size limits, chunking profile
-
-Behavior note:
-`Full`: backs up all selected files.
-`Incremental`: backs up files that changed since the last recorded version of those files.
-`ChunkSnapshot`: records a new manifest snapshot and reuses already-uploaded content-addressed chunks.
-
-New configs default to `ChunkSnapshot` for user-file backups.
-
-The repository still contains a standalone `DiffManager` prototype for binary diff generation, but it is not wired into the production backup or restore flow.
-
 - **Encryption**: Enable/disable AES-256-GCM encryption with password protection for all backups
-- **System Backup**: Enable/disable system state backups with separate storage selection for programs, environment variables, and settings
+- **System Backup**: Enable/disable system state backups, choose which components to include (programs, environment variables, Windows settings), and select separate storage per component
 - **Retention**: Configure how many backups to keep and max backup age
 - **Exclusions**: File patterns and paths to exclude from backups
+
+### What the backup types do
+
+- `Full`: backs up all selected files.
+- `Incremental`: backs up files that changed since the last recorded version of those files.
+- `ChunkSnapshot`: records a new manifest snapshot and reuses already-uploaded content-addressed chunks.
+
+New configs default to `ChunkSnapshot` for user-file backups. The repository also contains a
+standalone `DiffManager` prototype for binary diff generation, but it is not wired into the
+production backup or restore flow.
 
 ## Retention Policies
 
@@ -124,7 +133,59 @@ Example configuration:
 }
 ```
 
-- **Backup Data**: `%USERPROFILE%\ReStoreBackups` (default, configurable)
+## Scheduled Verification
+
+Verification re-downloads every unique chunk of a snapshot, decrypts it if necessary, and
+re-hashes each file to confirm the backup would actually restore. It catches bit-rot and a
+provider silently dropping objects — failure modes that otherwise stay invisible until a
+restore is attempted.
+
+Because a run transfers the whole snapshot, it is **disabled by default** and limited to
+local storage unless you explicitly opt out.
+
+```json
+{
+  "verification": {
+    "enabled": true,
+    "verifyInterval": "7.00:00:00",
+    "localStorageOnly": true,
+    "snapshotsPerRun": 2
+  }
+}
+```
+
+- `verifyInterval` uses `d.hh:mm:ss`. Zero or negative disables scheduling.
+- `localStorageOnly: false` extends verification to remote providers. On egress-billed
+  storage this is a real recurring cost, so `--validate-config` warns when it is set.
+- `snapshotsPerRun` bounds how many snapshots per folder are checked in one due cycle. The
+  newest is always first; any remaining budget rotates through older snapshots,
+  least-recently-verified first, so an older restore point is eventually covered instead of
+  never being looked at. Each additional snapshot re-downloads the chunks it references, so
+  raising this multiplies one cycle's transfer cost.
+- Results are recorded in the existing verification telemetry and surfaced on the Dashboard's
+  Backup Health card.
+
+## Notifications
+
+Tray notifications report the events worth interrupting for and stay silent otherwise —
+notifying on every routine success trains people to ignore the notifications that matter.
+
+```json
+{
+  "notifications": {
+    "enabled": true,
+    "notifyOnBackupFailure": true,
+    "notifyOnVerificationFailure": true,
+    "notifyOnRecovery": true,
+    "notifyOnEveryBackupSuccess": false
+  }
+}
+```
+
+- `notifyOnRecovery` fires on the first successful cycle after one or more failing cycles.
+- `notifyOnEveryBackupSuccess` is off by default; enable it only if you want per-cycle
+  confirmation.
+- Windows Focus Assist is respected: while it is active, notifications are suppressed.
 
 ## Application Behavior Settings
 

@@ -113,14 +113,10 @@ public class S3Storage(ILogger logger) : StorageBase(logger)
 
         if (disposing)
         {
-            // Dispose managed state (managed objects).
             _s3Client?.Dispose();
-            _s3Client = null; // Set to null after disposal
+            _s3Client = null;
             Logger.Log("Disposed S3Client.", LogLevel.Debug);
         }
-
-        // Free unmanaged resources (unmanaged objects) and override finalizer
-        // Set large fields to null
 
         _disposed = true;
         base.Dispose(disposing);

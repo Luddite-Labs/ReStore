@@ -42,6 +42,53 @@ restore restore "snapshots/documents_abcd1234ef567890/HEAD" "C:\Restore\Document
 restore restore "snapshots/documents_abcd1234ef567890/snapshot_20260101010101_abcdef.manifest.json" "C:\Restore\Documents"
 ```
 
+Every restore prints a preview first — file count, total size, and which destination files
+already exist and would be affected.
+
+### Preview without writing anything
+
+```bash
+restore restore "snapshots/documents_abcd1234ef567890/HEAD" "C:\Restore\Documents" --dry-run
+```
+
+### Overwrite protection
+
+`--conflict` decides what happens to files that already exist at the destination. The
+default is `skip`, which never modifies a file you already have.
+
+```bash
+# Keep existing files, restore only what is missing (default)
+restore restore "snapshots/documents_abcd1234ef567890/HEAD" "C:\Restore\Documents" --conflict skip
+
+# Restore alongside as "name (restored).ext"
+restore restore "snapshots/documents_abcd1234ef567890/HEAD" "C:\Restore\Documents" --conflict keepboth
+
+# Replace existing files
+restore restore "snapshots/documents_abcd1234ef567890/HEAD" "C:\Restore\Documents" --conflict overwrite
+
+# Abort before writing anything if any file would be replaced
+restore restore "snapshots/documents_abcd1234ef567890/HEAD" "C:\Restore\Documents" --conflict fail
+```
+
+Restored files are written to a temporary sibling file and moved into place only after their
+hash matches the manifest, so an interrupted restore never leaves a truncated file where
+your real file was.
+
+### Restore a subset
+
+`--include` filters by manifest-relative path and may be repeated. `**` spans directory
+separators, `*` and `?` do not.
+
+```bash
+restore restore "snapshots/documents_abcd1234ef567890/HEAD" "C:\Restore\Documents" --include "reports/**"
+restore restore "snapshots/documents_abcd1234ef567890/HEAD" "C:\Restore\Documents" --include "reports/**" --include "*.docx"
+```
+
+### Cancellation
+
+`Ctrl+C` cancels an in-flight backup, restore, or verify. A cancelled backup leaves `HEAD`
+pointing at the previous snapshot, and a cancelled restore leaves no partial files behind.
+
 ## Verify Snapshot Integrity
 
 Verify manifest and chunk-store integrity without restoring files:

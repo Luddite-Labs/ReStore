@@ -90,17 +90,16 @@ FileSelectionService filters files (exclusions)
   ↓
 SystemState.GetChangedFiles() determines changed files
   ↓
-ChunkingService builds content-defined chunks for changed files
-  ↓
-Backup uploads only missing chunks (ExistsAsync checks)
+ChunkingService chunks each file, uploading any chunk the provider
+does not already have as it is produced (ExistsAsync per chunk)
   ↓
 Backup uploads snapshot manifest
   ↓
 Backup updates HEAD pointer (commit point)
   ↓
-RetentionManager applies manifest retention and chunk GC
-  ↓
 SystemState.AddSnapshotBackup() records snapshot and chunk references
+  ↓
+RetentionManager applies manifest retention and chunk GC
   ↓
 SystemState.SaveStateAsync() persists state
   ↓

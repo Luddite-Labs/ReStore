@@ -103,6 +103,52 @@ public class ConfigManagerTests
   }
 
   [Fact]
+  public void SetGlobalStorageType_ShouldUpdateValue_WhenProviderIsConfigured()
+  {
+    InvokePrivate(_configManager, "LoadStorageSettings", ParseRoot("""
+{
+  "storageSources": {
+    "local": { "path": "%TEMP%\\restore-storage", "options": {} },
+    "s3": { "path": "", "options": { "bucketName": "demo" } }
+  },
+  "globalStorageType": "local"
+}
+"""));
+
+    _configManager.SetGlobalStorageType("s3");
+
+    _configManager.GlobalStorageType.Should().Be("s3");
+  }
+
+  [Fact]
+  public void SetGlobalStorageType_ShouldThrow_WhenProviderIsNotConfigured()
+  {
+    InvokePrivate(_configManager, "LoadStorageSettings", ParseRoot("""
+{
+  "storageSources": {
+    "local": { "path": "%TEMP%\\restore-storage", "options": {} }
+  },
+  "globalStorageType": "local"
+}
+"""));
+
+    var act = () => _configManager.SetGlobalStorageType("gdrive");
+
+    act.Should().Throw<ArgumentException>();
+    _configManager.GlobalStorageType.Should().Be("local", "a rejected change must not be applied");
+  }
+
+  [Theory]
+  [InlineData("")]
+  [InlineData("   ")]
+  public void SetGlobalStorageType_ShouldThrow_WhenProviderIsBlank(string storageType)
+  {
+    var act = () => _configManager.SetGlobalStorageType(storageType);
+
+    act.Should().Throw<ArgumentException>();
+  }
+
+  [Fact]
   public void LoadExclusions_ShouldFallbackToDefaults_WhenPropertiesMissing()
   {
     var root = ParseRoot("{}");

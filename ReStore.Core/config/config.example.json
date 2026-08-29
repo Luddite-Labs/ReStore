@@ -2,7 +2,7 @@
   "watchDirectories": [
     {
       "path": "%APPDATA%",
-      "storageType": "gdrive"
+      "storageType": null
     },
     {
       "path": "%USERPROFILE%\\Desktop",
@@ -10,15 +10,15 @@
     },
     {
       "path": "%USERPROFILE%\\Documents",
-      "storageType": "local"
+      "storageType": null
     },
     {
       "path": "%USERPROFILE%\\Pictures",
-      "storageType": "s3"
+      "storageType": null
     }
   ],
   "globalStorageType": "local",
-  "configSchemaVersion": 3,
+  "configSchemaVersion": 4,
   "backupInterval": "01:00:00",
   "sizeThresholdMB": 500,
   "maxFileSizeMB": 100,
@@ -37,15 +37,29 @@
     "keepLastPerDirectory": 5,
     "maxAgeDays": 30
   },
+  "verification": {
+    "enabled": false,
+    "verifyInterval": "7.00:00:00",
+    "localStorageOnly": true,
+    "snapshotsPerRun": 2
+  },
+  "notifications": {
+    "enabled": true,
+    "notifyOnBackupFailure": true,
+    "notifyOnVerificationFailure": true,
+    "notifyOnRecovery": true,
+    "notifyOnEveryBackupSuccess": false
+  },
   "systemBackup": {
     "enabled": true,
     "includePrograms": true,
     "includeEnvironmentVariables": true,
+    "includeWindowsSettings": true,
     "backupInterval": "1.00:00:00",
     "storageType": null,
-    "programsStorageType": "local",
-    "environmentStorageType": "gdrive",
-    "settingsStorageType": "s3",
+    "programsStorageType": null,
+    "environmentStorageType": null,
+    "settingsStorageType": null,
     "excludeSystemPrograms": [
       "Microsoft Visual C++",
       "Microsoft .NET",

@@ -1,7 +1,7 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <TargetFramework>net9.0</TargetFramework>
+    <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <IsPackable>false</IsPackable>
@@ -23,6 +23,13 @@
 
   <ItemGroup>
     <ProjectReference Include="..\ReStore.Core\ReStore.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Linked rather than project-referenced: the GUI project targets net10.0-windows and
+         drags in WPF, while this project is plain net10.0. NestedScrollGesture is deliberately
+         WPF-free so its scroll arithmetic can be tested here. -->
+    <Compile Include="..\ReStore\Behaviors\NestedScrollGesture.cs" Link="Behaviors\NestedScrollGesture.cs" />
   </ItemGroup>
 
 </Project>

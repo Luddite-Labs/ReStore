@@ -24,7 +24,6 @@ namespace ReStore.Core.src.backup
             _configManager = configManager;
             _fileSelectionService = new FileSelectionService(logger, configManager);
 
-            // Initialize from ConfigManager instead of creating new defaults
             _configuration = new BackupConfiguration
             {
                 IncludePaths = _configManager.WatchDirectories.Select(w => w.Path).ToList(),

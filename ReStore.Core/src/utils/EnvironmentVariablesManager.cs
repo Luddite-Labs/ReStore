@@ -21,10 +21,8 @@ public class EnvironmentVariablesManager(ILogger logger)
 
         var variables = new List<EnvironmentVariableEntry>();
 
-        // Get system environment variables
         variables.AddRange(GetEnvironmentVariables(EnvironmentVariableTarget.Machine));
 
-        // Get user environment variables  
         variables.AddRange(GetEnvironmentVariables(EnvironmentVariableTarget.User));
 
         _logger.Log($"Found {variables.Count} environment variables", LogLevel.Info);
@@ -224,6 +222,11 @@ public class EnvironmentVariablesManager(ILogger logger)
         try
         {
             _logger.Log($"Executing PowerShell restore script: {scriptPath}", LogLevel.Info);
+            if (!File.Exists(scriptPath))
+            {
+                _logger.Log($"PowerShell restore script not found: {scriptPath}", LogLevel.Warning);
+                return false;
+            }
 
             var processStartInfo = new ProcessStartInfo
             {

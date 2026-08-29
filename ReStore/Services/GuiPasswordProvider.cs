@@ -56,10 +56,12 @@ public class GuiPasswordProvider(bool promptUser = true) : IPasswordProvider, IL
 
                 if (_isForEncryption)
                 {
-                    var configManager = new ConfigManager(this);
-                    await configManager.LoadAsync();
-                    
-                    if (!string.IsNullOrEmpty(configManager.Encryption.Salt) && 
+                    // Shared instance: this runs inside the password retry loop, so a fresh
+                    // load here would re-read config.json on every attempt and would discard
+                    // unsaved edits made on the Settings page.
+                    var configManager = await AppServices.GetConfigManagerAsync();
+
+                    if (!string.IsNullOrEmpty(configManager.Encryption.Salt) &&
                         !string.IsNullOrEmpty(configManager.Encryption.VerificationToken))
                     {
                         var encryptionService = new EncryptionService(this);

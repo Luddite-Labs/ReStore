@@ -5,7 +5,7 @@
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                         ReStore (WPF Application)                           │
-│                              net9.0-windows                                 │
+│                              net10.0-windows                                │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                                                                             │
 │  ┌───────────────┐  ┌───────────────┐  ┌───────────────┐  ┌──────────────┐  │
@@ -29,14 +29,21 @@
 │  │ • ThemeSettings (Theme Management)                   │                   │
 │  │ • GuiPasswordProvider (Password Management)          │                   │
 │  │ • FileContextMenuService (Explorer Context Menu)     │                   │
+│  │ • AppServices (Shared Config/State/Logger)           │                   │
+│  │ • BackupNotificationService (Tray Balloons)          │                   │
+│  │ • NotificationSuppressionProbe (Focus Assist)        │                   │
 │  └──────────────────────────────────────────────────────┘                   │
 │                             │                                               │
 │  ┌──────────────────────────┴───────────────────────────┐                   │
 │  │                    GUI Windows                       │                   │
 │  ├──────────────────────────────────────────────────────┤                   │
+│  │ • FirstRunWizardWindow (First-Run Setup)             │                   │
+│  │ • OperationProgressWindow (Progress + Cancel Host)   │                   │
+│  │ • RestoreConfirmWindow (Restore Preview + Policy)    │                   │
 │  │ • PasswordPromptWindow (Password Entry)              │                   │
 │  │ • EncryptionSetupWindow (Encryption Config)          │                   │
 │  │ • RestoreProgressWindow (System Restore Progress)    │                   │
+│  │ • TextInputWindow (Restore Point Labels)             │                   │
 │  │ • ShareWindow (File Sharing Dialog)                  │                   │
 │  └──────────────────────────────────────────────────────┘                   │
 │                             │                                               │
@@ -46,7 +53,7 @@
                               ↓
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                         ReStore.Core (Library)                              │
-│                              net9.0                                         │
+│                              net10.0                                        │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                                                                             │
 │  ┌────────────────────────────────────────────────────────────────┐         │
@@ -59,6 +66,8 @@
 │  │ • FileHasher ← File Hash Calculation (SHA256)                  │         │
 │  │ • FileSelectionService ← File Filtering Logic                  │         │
 │  │ • ConfigValidator ← Configuration Validation                   │         │
+│  │ • ConfigSchemaManager ← Schema Versioning & Migrations         │         │
+│  │ • ByteFormatter ← Shared Byte-Size Formatting                  │         │
 │  │ • EncryptionService ← AES-256-GCM Encryption/Decryption        │         │
 │  │ • IPasswordProvider ← Password Provider Interface              │         │
 │  │ • EnvironmentVariablesManager ← Env Var Backup/Restore         │         │
@@ -73,6 +82,9 @@
 │  │ • Backup ← Chunk Snapshot Backup Pipeline                      │         │
 │  │ • Restore ← Manifest-Driven Restore Pipeline                   │         │
 │  │ • SnapshotIntegrityVerifier ← Manifest/Chunk Verification      │         │
+│  │ • SnapshotManifest ← Manifest Model + Root Hash Contract       │         │
+│  │ • RestorePreview ← Conflict Policy + Pre-Restore Report        │         │
+│  │ • OperationProgress ← Backup/Restore/Verify Progress Records   │         │
 │  │ • DiffManager ← Standalone Binary Diff Prototype               │         │
 │  └────────────────────────────────────────────────────────────────┘         │
 │                                                                             │
@@ -80,6 +92,7 @@
 │  │                 src/monitoring (File Watching)                 │         │
 │  ├────────────────────────────────────────────────────────────────┤         │
 │  │ • FileWatcher ← Real-time File Monitoring                      │         │
+│  │ • BackupScheduler ← Interval-Based Backups                     │         │
 │  │ • SizeAnalyzer ← Directory Size Analysis                       │         │
 │  └────────────────────────────────────────────────────────────────┘         │
 │                                                                             │
@@ -118,6 +131,7 @@
 │  │ • FileDiffSyncManager ← File-Level Change Selection            │         │
 │  │ • ProgramRestoreManager ← Program Restore                      │         │
 │  │ • RetentionManager ← Backup Pruning & Retention Policies       │         │
+│  │ • ChunkingService ← Content-Defined Chunking                   │         │
 │  └────────────────────────────────────────────────────────────────┘         │
 │                                                                             │
 └─────────────────────────────────────────────────────────────────────────────┘
@@ -179,6 +193,7 @@ public interface IStorage : IDisposable
 The `WatcherService` singleton bridges the GUI and Core library:
 
 - GUI creates `FileWatcher` instances and registers them with `WatcherService`
+- Starting the watcher also starts a `BackupScheduler` so the configured `backupInterval` is honoured; stopping it disposes both
 - Enables shared watcher state across GUI pages
 - **Pattern**: Use singleton for cross-page state, not for services tied to view lifecycle
 
@@ -188,12 +203,20 @@ The `WatcherService` singleton bridges the GUI and Core library:
 
 | Service                  | Responsibility                           |
 | ------------------------ | ---------------------------------------- |
+| `AppServices`            | Shared `ConfigManager`/`SystemState`/`Logger` instances |
 | `WatcherService`         | File watcher lifecycle management        |
 | `SystemTrayManager`      | System tray icon and notifications       |
+| `BackupNotificationService` | Routes scheduler outcomes to tray balloons |
+| `NotificationSuppressionProbe` | Detects Focus Assist / Do not disturb |
 | `AppSettings`            | GUI-specific settings persistence        |
 | `ThemeSettings`          | Light/Dark/System theme management       |
 | `GuiPasswordProvider`    | Password caching and prompt handling     |
 | `FileContextMenuService` | Windows Explorer context menu management |
+
+All pages and windows share one `ConfigManager` and one `SystemState`, loaded on first use.
+Per-page instances would each re-read the same files on every navigation, and — because
+`SaveAsync` writes whatever its own instance holds — a save from one page could silently
+discard edits made on another.
 
 ### Core Utilities
 

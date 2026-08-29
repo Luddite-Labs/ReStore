@@ -100,13 +100,13 @@ public static class ConfigInitializer
 
         while (currentDir?.Parent != null)
         {
-            if ((currentDir.Name == "net9.0" || currentDir.Name == "net9.0-windows")
+            if (IsTargetFrameworkDirectory(currentDir.Name)
                 && currentDir.Parent?.Name == "Debug" && currentDir.Parent.Parent?.Name == "bin")
             {
                 projectRoot = currentDir.Parent.Parent.Parent;
                 break;
             }
-            else if ((currentDir.Name == "net9.0" || currentDir.Name == "net9.0-windows")
+            else if (IsTargetFrameworkDirectory(currentDir.Name)
                 && currentDir.Parent?.Name == "Release" && currentDir.Parent.Parent?.Name == "bin")
             {
                 projectRoot = currentDir.Parent.Parent.Parent;
@@ -136,6 +136,11 @@ public static class ConfigInitializer
         }
 
         return null;
+    }
+
+    private static bool IsTargetFrameworkDirectory(string name)
+    {
+        return name.StartsWith("net", StringComparison.OrdinalIgnoreCase);
     }
 
     public static string GetUserConfigDirectory() => USER_CONFIG_DIR;

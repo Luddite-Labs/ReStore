@@ -344,8 +344,11 @@ public class SystemBackupManagerHelperTests : IDisposable
         var variableName = "RESTORE_SYSTEM_BACKUP_" + Guid.NewGuid().ToString("N");
         var extractDir = Path.Combine(_testRoot, "environment-restore");
         Directory.CreateDirectory(extractDir);
+        var target = OperatingSystem.IsWindows()
+            ? EnvironmentVariableTarget.User
+            : EnvironmentVariableTarget.Process;
 
-        Environment.SetEnvironmentVariable(variableName, null, EnvironmentVariableTarget.User);
+        Environment.SetEnvironmentVariable(variableName, null, target);
 
         try
         {
@@ -357,7 +360,7 @@ public class SystemBackupManagerHelperTests : IDisposable
                     {
                         Name = variableName,
                         Value = "restored-value",
-                        Target = EnvironmentVariableTarget.User
+                        Target = target
                     }
                 }
             };
@@ -369,13 +372,13 @@ public class SystemBackupManagerHelperTests : IDisposable
 
             await InvokePrivateAsync(_manager, "RestoreEnvironmentVariablesAsync", extractDir);
 
-            Environment.GetEnvironmentVariable(variableName, EnvironmentVariableTarget.User).Should().Be("restored-value");
+            Environment.GetEnvironmentVariable(variableName, target).Should().Be("restored-value");
             _logger.Messages.Should().Contain(message => message.Contains("Environment variables restore script available"));
             _logger.Messages.Should().Contain(message => message.Contains(scriptPath));
         }
         finally
         {
-            Environment.SetEnvironmentVariable(variableName, null, EnvironmentVariableTarget.User);
+            Environment.SetEnvironmentVariable(variableName, null, target);
         }
     }
 

@@ -25,7 +25,7 @@ public sealed class ConfigMigrationResult(int sourceSchemaVersion, int targetSch
 
 public static class ConfigSchemaManager
 {
-    public const int CURRENT_CONFIG_SCHEMA_VERSION = 3;
+    public const int CURRENT_CONFIG_SCHEMA_VERSION = 4;
 
     public static ConfigMigrationResult Migrate(JsonObject configRoot)
     {
@@ -43,6 +43,8 @@ public static class ConfigSchemaManager
         var migrationResult = new ConfigMigrationResult(sourceSchemaVersion, sourceSchemaVersion);
         var workingSchemaVersion = sourceSchemaVersion;
 
+        // Version-gated steps handle genuine reshaping: renames and value remappings that
+        // are only meaningful when coming from an older layout.
         if (workingSchemaVersion < 2)
         {
             ApplyMigrationToSchemaV2(configRoot, migrationResult);
@@ -55,6 +57,12 @@ public static class ConfigSchemaManager
             workingSchemaVersion = 3;
         }
 
+        // Missing-section defaults run on every load, regardless of version. A config already
+        // stamped with the current version can still be missing a block — hand-edited,
+        // truncated, or written by a build that predates it — and a version-gated repair
+        // would silently skip it forever.
+        EnsureCurrentDefaults(configRoot, migrationResult);
+
         if (!HasExactIntValue(configRoot, "configSchemaVersion", CURRENT_CONFIG_SCHEMA_VERSION))
         {
             configRoot["configSchemaVersion"] = CURRENT_CONFIG_SCHEMA_VERSION;
@@ -65,23 +73,17 @@ public static class ConfigSchemaManager
         return migrationResult;
     }
 
-    private static void ApplyMigrationToSchemaV2(JsonObject configRoot, ConfigMigrationResult migrationResult)
+    /// <summary>
+    /// Injects any missing configuration block with its documented default. Idempotent: a
+    /// complete config passes through untouched and reports no migration.
+    /// </summary>
+    private static void EnsureCurrentDefaults(JsonObject configRoot, ConfigMigrationResult migrationResult)
     {
-        if (TryGetString(configRoot, "backupType", out var backupTypeValue)
-            && backupTypeValue.Equals("Differential", StringComparison.OrdinalIgnoreCase))
-        {
-            configRoot["backupType"] = "ChunkSnapshot";
-            migrationResult.AddMigration("Mapped backupType from Differential to ChunkSnapshot.");
-        }
-
         if (EnsureChunkDiffingDefaults(configRoot))
         {
             migrationResult.AddMigration("Added missing chunkDiffing configuration defaults.");
         }
-    }
 
-    private static void ApplyMigrationToSchemaV3(JsonObject configRoot, ConfigMigrationResult migrationResult)
-    {
         if (EnsureGlobalStorageType(configRoot))
         {
             migrationResult.AddMigration("Added missing globalStorageType.");
@@ -101,6 +103,36 @@ public static class ConfigSchemaManager
         {
             migrationResult.AddMigration("Added systemBackup.includeWindowsSettings default value.");
         }
+
+        if (EnsureVerificationDefaults(configRoot))
+        {
+            migrationResult.AddMigration("Added scheduled verification configuration defaults (disabled).");
+        }
+
+        if (EnsureNotificationDefaults(configRoot))
+        {
+            migrationResult.AddMigration("Added notification configuration defaults.");
+        }
+    }
+
+    /// <summary>v1 → v2: the only true reshaping is the backupType rename.</summary>
+    private static void ApplyMigrationToSchemaV2(JsonObject configRoot, ConfigMigrationResult migrationResult)
+    {
+        if (TryGetString(configRoot, "backupType", out var backupTypeValue)
+            && backupTypeValue.Equals("Differential", StringComparison.OrdinalIgnoreCase))
+        {
+            configRoot["backupType"] = "ChunkSnapshot";
+            migrationResult.AddMigration("Mapped backupType from Differential to ChunkSnapshot.");
+        }
+    }
+
+    /// <summary>
+    /// v2 → v3 introduced only new blocks, which <see cref="EnsureCurrentDefaults"/> now
+    /// covers for every version. Retained as an explicit no-op so the version ladder stays
+    /// readable rather than skipping a number.
+    /// </summary>
+    private static void ApplyMigrationToSchemaV3(JsonObject configRoot, ConfigMigrationResult migrationResult)
+    {
     }
 
     private static bool EnsureChunkDiffingDefaults(JsonObject configRoot)
@@ -172,6 +204,44 @@ public static class ConfigSchemaManager
         changed |= EnsureBool(systemBackup, "includeWindowsSettings", true);
 
         return changed;
+    }
+
+    private static bool EnsureVerificationDefaults(JsonObject configRoot)
+    {
+        var changed = false;
+        var verification = EnsureObject(configRoot, "verification", ref changed);
+
+        changed |= EnsureBool(verification, "enabled", false);
+        changed |= EnsureString(verification, "verifyInterval", "7.00:00:00");
+        changed |= EnsureBool(verification, "localStorageOnly", true);
+        changed |= EnsureInt(verification, "snapshotsPerRun", 2);
+
+        return changed;
+    }
+
+    private static bool EnsureNotificationDefaults(JsonObject configRoot)
+    {
+        var changed = false;
+        var notifications = EnsureObject(configRoot, "notifications", ref changed);
+
+        changed |= EnsureBool(notifications, "enabled", true);
+        changed |= EnsureBool(notifications, "notifyOnBackupFailure", true);
+        changed |= EnsureBool(notifications, "notifyOnVerificationFailure", true);
+        changed |= EnsureBool(notifications, "notifyOnRecovery", true);
+        changed |= EnsureBool(notifications, "notifyOnEveryBackupSuccess", false);
+
+        return changed;
+    }
+
+    private static bool EnsureString(JsonObject parent, string propertyName, string defaultValue)
+    {
+        if (TryGetString(parent, propertyName, out _))
+        {
+            return false;
+        }
+
+        parent[propertyName] = defaultValue;
+        return true;
     }
 
     private static JsonObject EnsureObject(JsonObject parent, string propertyName, ref bool changed)

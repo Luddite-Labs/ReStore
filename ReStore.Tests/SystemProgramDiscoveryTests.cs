@@ -97,6 +97,11 @@ App Two                     Fabrikam.AppTwo               2.0.1
     [Fact]
     public void GetProgramsFromRegistryPath_ShouldReturnOnlyValidPrograms()
     {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
         var relativePath = CreateTestRegistryPath("GetPrograms");
 
         try
@@ -144,6 +149,11 @@ App Two                     Fabrikam.AppTwo               2.0.1
     [Fact]
     public void ShouldSkipProgram_ShouldDetectSystemComponentAndMissingUninstall()
     {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
         var relativePath = CreateTestRegistryPath("ShouldSkip");
 
         try

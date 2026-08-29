@@ -122,6 +122,10 @@ namespace ReStore.Views.Windows
                 {
                     await RestoreEnvironmentAsync(extractDir);
                 }
+                else if (_backupType == "system_settings")
+                {
+                    await RestoreWindowsSettingsAsync(extractDir);
+                }
 
                 // Complete
                 _isComplete = true;
@@ -276,6 +280,99 @@ namespace ReStore.Views.Windows
                 Log($"Failed to restore environment variables: {ex.Message}", LogLevel.Error);
                 FailedCountText.Text = "Error";
                 throw;
+            }
+        }
+
+        private async Task RestoreWindowsSettingsAsync(string extractDir)
+        {
+            StatusText.Text = "Restoring Windows Settings";
+            DetailText.Text = "Processing Windows settings...";
+
+            var manifestPath = Path.Combine(extractDir, "settings_manifest.json");
+            WindowsSettingsExport? manifest = null;
+
+            if (File.Exists(manifestPath))
+            {
+                try
+                {
+                    var json = await File.ReadAllTextAsync(manifestPath);
+                    manifest = System.Text.Json.JsonSerializer.Deserialize<WindowsSettingsExport>(json);
+
+                    var exportedFileCount = manifest?.ExportedFiles.Count ?? 0;
+                    TotalCountText.Text = exportedFileCount.ToString();
+                    Log($"Found {exportedFileCount} Windows settings registry exports", LogLevel.Info);
+                }
+                catch (Exception ex)
+                {
+                    Log($"Failed to read Windows settings manifest: {ex.Message}", LogLevel.Warning);
+                    TotalCountText.Text = "N/A";
+                }
+            }
+            else
+            {
+                Log("Windows settings manifest not found in backup", LogLevel.Warning);
+                TotalCountText.Text = "N/A";
+            }
+
+            var scriptPath = Path.Combine(extractDir, "restore_windows_settings.ps1");
+            if (!File.Exists(scriptPath))
+            {
+                Log("Windows settings restore script not found in backup", LogLevel.Warning);
+                DetailText.Text = "Windows settings restore script not found.";
+                return;
+            }
+
+            Log($"Windows settings restore script available: {scriptPath}", LogLevel.Info);
+
+            var categoryText = manifest?.ExportedCategories.Count > 0
+                ? $"{manifest.ExportedCategories.Count} settings categor{(manifest.ExportedCategories.Count == 1 ? "y" : "ies")}"
+                : "Windows settings";
+
+            var result = MessageBox.Show(
+                $"Found {categoryText} to restore.\n\n" +
+                "Would you like to run the restore script now?\n\n" +
+                "This will modify Windows registry settings and may require administrator privileges.",
+                "Restore Windows Settings",
+                MessageBoxButton.YesNo,
+                MessageBoxImage.Warning);
+
+            if (result != MessageBoxResult.Yes)
+            {
+                Log("User skipped Windows settings restoration", LogLevel.Info);
+                DetailText.Text = "Skipped restoration. Scripts are available.";
+                return;
+            }
+
+            try
+            {
+                DetailText.Text = "Launching Windows settings restore script...";
+                var escapedScriptPath = scriptPath.Replace("\"", "\\\"");
+                var processInfo = new ProcessStartInfo
+                {
+                    FileName = "powershell.exe",
+                    Arguments = $"-NoProfile -ExecutionPolicy Bypass -File \"{escapedScriptPath}\"",
+                    UseShellExecute = true,
+                    Verb = "runas"
+                };
+
+                var process = Process.Start(processInfo);
+                if (process == null)
+                {
+                    FailedCountText.Text = "Launch failed";
+                    DetailText.Text = "Could not launch the Windows settings restore script.";
+                    Log("Could not launch Windows settings restore script", LogLevel.Warning);
+                    return;
+                }
+
+                SuccessCountText.Text = "Started";
+                DetailText.Text = "Windows settings restore script launched.";
+                Log("Windows settings restore script launched", LogLevel.Info);
+            }
+            catch (System.ComponentModel.Win32Exception ex)
+            {
+                FailedCountText.Text = "Canceled";
+                DetailText.Text = "Windows settings restore script was not launched.";
+                Log($"Windows settings restore script was not launched: {ex.Message}", LogLevel.Warning);
             }
         }
 

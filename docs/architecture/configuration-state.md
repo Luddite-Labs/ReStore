@@ -10,8 +10,8 @@ ReStore uses several JSON files for configuration and state persistence. All use
 | ------------------- | ------------------------------ | ----------------------------------- |
 | `config.json`       | `%USERPROFILE%\ReStore\`       | Application configuration           |
 | `system_state.json` | `%USERPROFILE%\ReStore\state\` | Backup history and file metadata    |
-| `appsettings.json`  | Application directory          | GUI-specific settings               |
-| `theme.json`        | Application directory          | Theme preferences                   |
+| `appsettings.json`  | `%USERPROFILE%\ReStore\`       | GUI-specific settings               |
+| `theme.json`        | `%LOCALAPPDATA%\ReStore\`      | Theme preferences                   |
 | `*.manifest.json`   | Remote storage                 | User-file snapshot manifest         |
 | `HEAD`              | Remote storage                 | Pointer to latest snapshot manifest |
 | `chunks/*/*.chunk`  | Remote storage                 | Deduplicated chunk objects          |
@@ -87,7 +87,10 @@ Main configuration file for backup settings, storage providers, and encryption.
     "gdrive": {
       "path": "backups",
       "options": {
-        "credentialPath": "..."
+        "client_id": "...",
+        "client_secret": "...",
+        "token_folder": "...",
+        "backup_folder_name": "ReStoreBackups"
       }
     },
     "dropbox": {
@@ -142,7 +145,7 @@ Main configuration file for backup settings, storage providers, and encryption.
 | Section            | Description                                                 |
 | ------------------ | ----------------------------------------------------------- |
 | `watchDirectories` | Directories to monitor for file changes                     |
-| `backupInterval`   | How often automatic backups run (TimeSpan format)           |
+| `backupInterval`   | How often each watched directory is backed up (TimeSpan format) |
 | `backupType`       | `Full`, `Incremental`, or `ChunkSnapshot`                   |
 | `chunkDiffing`     | Manifest version, chunk profile, and chunking safety limits |
 | `excludedPatterns` | Glob patterns to exclude (e.g., `*.tmp`)                    |
@@ -151,6 +154,32 @@ Main configuration file for backup settings, storage providers, and encryption.
 | `retention`        | Automatic backup pruning settings                           |
 | `storageSources`   | Storage provider configurations                             |
 | `systemBackup`     | System backup settings (programs, env vars, registry)       |
+
+### Scheduling
+
+`backupInterval` and `systemBackup.backupInterval` are driven by `BackupScheduler`, which
+runs whenever the file watcher is running (the GUI's **Start Watcher**, or
+`ReStore.Core.exe --service`).
+
+The scheduler complements the watcher rather than duplicating it:
+
+- The **watcher** is event-driven and reacts to changes as they happen, debounced by a
+  fixed 10-second buffer.
+- The **scheduler** sweeps each watched directory on its interval, so changes made while
+  the machine was asleep or the app was closed are still captured.
+
+Due times are computed from the **last recorded backup timestamp**, not from when the
+scheduler started. Restarting does not reset the clock, and a machine that was off past
+its due time backs up shortly after the next launch rather than waiting another full
+interval. The scheduler re-evaluates once a minute, and intervals below one minute are
+clamped to one minute; an interval of zero or less disables scheduling.
+
+Sweeps never overlap — if a backup is still running when the next tick fires, that tick is
+skipped. A failure on one directory is logged and does not stop the others.
+
+`systemBackup.backupInterval` schedules the system backup (programs, environment
+variables, Windows settings) on Windows only, and only when `systemBackup.enabled` is true
+and at least one component is included.
 
 ## system_state.json (Runtime State)
 
@@ -242,7 +271,8 @@ GUI-specific settings that don't affect core backup functionality.
 {
   "defaultStorage": "local",
   "showOnlyConfiguredProviders": true,
-  "minimizeToTray": true
+  "minimizeToTray": true,
+  "contextMenuEnabled": false
 }
 ```
 

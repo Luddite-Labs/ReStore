@@ -1,4 +1,4 @@
-using System.Text.Json;
+﻿using System.Text.Json;
 using System.Text.RegularExpressions;
 using ReStore.Core.src.utils;
 using System.Text.Json.Serialization;
@@ -23,6 +23,22 @@ public class SnapshotBackupTelemetryAggregate
     public long UniqueReusedChunks { get; set; }
     public long StorageHitChunks { get; set; }
     public long CandidateChunks { get; set; }
+
+    /// <summary>
+    /// Stored bytes of every unique chunk a snapshot referenced, summed across snapshots.
+    /// This is what storage would have cost with no deduplication.
+    /// </summary>
+    public long ReferencedStoredBytes { get; set; }
+
+    /// <summary>Stored bytes actually transferred, i.e. chunks not already in the provider.</summary>
+    public long UploadedStoredBytes { get; set; }
+
+    /// <summary>
+    /// Exact bytes deduplication avoided transferring:
+    /// <see cref="ReferencedStoredBytes"/> minus <see cref="UploadedStoredBytes"/>.
+    /// </summary>
+    public long DedupSavedBytes => Math.Max(0, ReferencedStoredBytes - UploadedStoredBytes);
+
     public DateTime LastUpdatedUtc { get; set; }
 }
 
@@ -70,6 +86,9 @@ internal class PersistentStateData
     public Dictionary<string, FileMetadata> FileMetadata { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     public Dictionary<string, int> ChunkReferenceCounts { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     public SnapshotTelemetryAggregate Telemetry { get; set; } = new();
+
+    /// <summary>Last verification time per snapshot path; drives the scheduler's rotation.</summary>
+    public Dictionary<string, DateTime> SnapshotVerificationTimes { get; set; } = new(StringComparer.OrdinalIgnoreCase);
 }
 
 public partial class SystemState
@@ -80,6 +99,12 @@ public partial class SystemState
     public Dictionary<string, FileMetadata> FileMetadata { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     public Dictionary<string, int> ChunkReferenceCounts { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     public SnapshotTelemetryAggregate Telemetry { get; set; } = new();
+
+    /// <summary>
+    /// Last verification time per snapshot path. Persisted so the scheduler's rotation over
+    /// older snapshots survives a restart instead of always restarting at the newest.
+    /// </summary>
+    public Dictionary<string, DateTime> SnapshotVerificationTimes { get; set; } = new(StringComparer.OrdinalIgnoreCase);
 
     private string _stateFilePath = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
@@ -322,7 +347,9 @@ public partial class SystemState
         int uploadedChunks,
         int uniqueReusedChunks,
         int storageHitChunks,
-        int candidateChunks)
+        int candidateChunks,
+        long referencedStoredBytes = 0,
+        long uploadedStoredBytes = 0)
     {
         lock (_stateLock)
         {
@@ -337,6 +364,8 @@ public partial class SystemState
             backup.UniqueReusedChunks += uniqueReusedChunks;
             backup.StorageHitChunks += storageHitChunks;
             backup.CandidateChunks += candidateChunks;
+            backup.ReferencedStoredBytes += referencedStoredBytes;
+            backup.UploadedStoredBytes += uploadedStoredBytes;
             backup.LastUpdatedUtc = DateTime.UtcNow;
         }
     }
@@ -421,11 +450,129 @@ public partial class SystemState
         }
     }
 
+    /// <summary>
+    /// Tags a recorded backup so a restore point can be chosen by meaning rather than by
+    /// timestamp. Returns false when the group or path is unknown.
+    /// </summary>
+    public virtual bool SetBackupLabel(string group, string backupPath, string? label)
+    {
+        if (string.IsNullOrWhiteSpace(group) || string.IsNullOrWhiteSpace(backupPath))
+        {
+            return false;
+        }
+
+        var normalizedLabel = string.IsNullOrWhiteSpace(label) ? null : label.Trim();
+
+        lock (_stateLock)
+        {
+            if (!BackupHistory.TryGetValue(group, out var backups))
+            {
+                return false;
+            }
+
+            var target = backups.FirstOrDefault(backup =>
+                backup.Path.Equals(backupPath, StringComparison.OrdinalIgnoreCase));
+
+            if (target == null)
+            {
+                return false;
+            }
+
+            target.Label = normalizedLabel;
+            return true;
+        }
+    }
+
+    /// <summary>Records that a snapshot was verified, for the scheduler's rotation.</summary>
+    public virtual void RecordSnapshotVerified(string snapshotPath, DateTime verifiedUtc)
+    {
+        if (string.IsNullOrWhiteSpace(snapshotPath))
+        {
+            return;
+        }
+
+        lock (_stateLock)
+        {
+            SnapshotVerificationTimes[snapshotPath] = verifiedUtc;
+        }
+    }
+
+    /// <summary>
+    /// Last verification time for a snapshot, or <see cref="DateTime.MinValue"/> if it has
+    /// never been verified — which sorts it first in the rotation.
+    /// </summary>
+    public virtual DateTime GetSnapshotVerifiedUtc(string snapshotPath)
+    {
+        if (string.IsNullOrWhiteSpace(snapshotPath))
+        {
+            return DateTime.MinValue;
+        }
+
+        lock (_stateLock)
+        {
+            return SnapshotVerificationTimes.TryGetValue(snapshotPath, out var verifiedAt)
+                ? verifiedAt
+                : DateTime.MinValue;
+        }
+    }
+
     public virtual List<string> GetBackupGroups()
     {
         lock (_stateLock)
         {
             return [.. BackupHistory.Keys];
+        }
+    }
+
+    /// <summary>
+    /// Total recorded backups across every group. Exists so callers don't enumerate
+    /// <see cref="BackupHistory"/> off-lock, which races with the scheduler and watcher
+    /// recording new snapshots.
+    /// </summary>
+    public virtual int GetTotalBackupCount()
+    {
+        lock (_stateLock)
+        {
+            return BackupHistory.Values.Sum(backups => backups.Count);
+        }
+    }
+
+    /// <summary>
+    /// Newest snapshot-manifest backup for a group, or null when the group has none.
+    /// Cheaper than <see cref="GetBackupsForGroup"/>, which deep-copies every entry's chunk
+    /// id list — costly for a UI that polls.
+    /// </summary>
+    public virtual BackupInfo? GetLatestSnapshotForGroup(string group)
+    {
+        if (string.IsNullOrWhiteSpace(group))
+        {
+            return null;
+        }
+
+        lock (_stateLock)
+        {
+            if (!BackupHistory.TryGetValue(group, out var backups) || backups.Count == 0)
+            {
+                return null;
+            }
+
+            var latest = backups
+                .Where(backup => backup.ArtifactType == BackupArtifactType.SnapshotManifest)
+                .OrderByDescending(backup => backup.Timestamp)
+                .FirstOrDefault();
+
+            return latest == null ? null : CloneBackupInfo(latest);
+        }
+    }
+
+    /// <summary>
+    /// Point-in-time copy of the whole history, safe to enumerate on another thread.
+    /// </summary>
+    public virtual Dictionary<string, List<BackupInfo>> GetBackupHistorySnapshot()
+    {
+        lock (_stateLock)
+        {
+            return CloneBackupHistory(BackupHistory);
         }
     }
 
@@ -440,21 +587,7 @@ public partial class SystemState
 
             return [.. backups
                 .OrderByDescending(b => b.Timestamp)
-                .Select(b => new BackupInfo
-                {
-                    Path = b.Path,
-                    Timestamp = b.Timestamp,
-                    IsDiff = b.IsDiff,
-                    StorageType = b.StorageType,
-                    SizeBytes = b.SizeBytes,
-                    ArtifactType = b.ArtifactType,
-                    SnapshotId = b.SnapshotId,
-                    ManifestPath = b.ManifestPath,
-                    ChunkIds = [.. b.ChunkIds],
-                    RootHash = b.RootHash,
-                    Encrypted = b.Encrypted,
-                    ChunkStorageNamespace = b.ChunkStorageNamespace
-                })];
+                .Select(CloneBackupInfo)];
         }
     }
 
@@ -463,6 +596,29 @@ public partial class SystemState
         lock (_stateLock)
         {
             return GetLastFullBackupTimeLocked(group);
+        }
+    }
+
+    /// <summary>
+    /// Most recent backup of any kind for a group, or <see cref="DateTime.MinValue"/> if
+    /// never backed up. Unlike <see cref="GetLastFullBackupTime"/> this ignores
+    /// <c>IsDiff</c>: the scheduler cares when the group was last captured at all.
+    /// </summary>
+    public virtual DateTime GetLastBackupTimeForGroup(string group)
+    {
+        if (string.IsNullOrWhiteSpace(group))
+        {
+            return DateTime.MinValue;
+        }
+
+        lock (_stateLock)
+        {
+            if (!BackupHistory.TryGetValue(group, out var backups) || backups.Count == 0)
+            {
+                return DateTime.MinValue;
+            }
+
+            return backups.Max(backup => backup.Timestamp.ToUniversalTime());
         }
     }
 
@@ -486,6 +642,13 @@ public partial class SystemState
             if (backups.Count == 0)
             {
                 BackupHistory.Remove(group);
+            }
+
+            // Otherwise the rotation bookkeeping grows without bound as retention prunes
+            // snapshots, since nothing else ever removes these entries.
+            foreach (var path in paths)
+            {
+                SnapshotVerificationTimes.Remove(path);
             }
         }
     }
@@ -550,7 +713,8 @@ public partial class SystemState
                 BackupHistory = CloneBackupHistory(BackupHistory),
                 FileMetadata = CloneFileMetadata(FileMetadata),
                 ChunkReferenceCounts = CloneChunkReferenceCounts(ChunkReferenceCounts),
-                Telemetry = CloneTelemetry(Telemetry)
+                Telemetry = CloneTelemetry(Telemetry),
+                SnapshotVerificationTimes = new Dictionary<string, DateTime>(SnapshotVerificationTimes, StringComparer.OrdinalIgnoreCase)
             };
 
             stateFilePath = _stateFilePath;
@@ -599,6 +763,9 @@ public partial class SystemState
                         FileMetadata = stateData.FileMetadata != null ? new(stateData.FileMetadata, StringComparer.OrdinalIgnoreCase) : new(StringComparer.OrdinalIgnoreCase);
                         ChunkReferenceCounts = stateData.ChunkReferenceCounts != null ? new(stateData.ChunkReferenceCounts, StringComparer.OrdinalIgnoreCase) : new(StringComparer.OrdinalIgnoreCase);
                         Telemetry = stateData.Telemetry ?? new SnapshotTelemetryAggregate();
+                        SnapshotVerificationTimes = stateData.SnapshotVerificationTimes != null
+                            ? new(stateData.SnapshotVerificationTimes, StringComparer.OrdinalIgnoreCase)
+                            : new(StringComparer.OrdinalIgnoreCase);
                         NormalizeTelemetryLocked();
 
                         if (ChunkReferenceCounts.Count == 0 || ContainsLegacyChunkReferenceKeysLocked())
@@ -641,6 +808,7 @@ public partial class SystemState
             FileMetadata = new(StringComparer.OrdinalIgnoreCase);
             ChunkReferenceCounts = new(StringComparer.OrdinalIgnoreCase);
             Telemetry = new SnapshotTelemetryAggregate();
+            SnapshotVerificationTimes = new(StringComparer.OrdinalIgnoreCase);
         }
     }
 
@@ -701,46 +869,36 @@ public partial class SystemState
                 }
                 else
                 {
-                    if (backupType == BackupType.Incremental)
+                    if (backupType == BackupType.Incremental || backupType == BackupType.ChunkSnapshot)
                     {
+                        var backupTypeLabel = backupType.ToString();
+
                         if (fileInfo.Length != previousMetadata.Size)
                         {
-                            _logger?.Log($"File changed (Incremental, size): {filePath}", LogLevel.Debug);
+                            _logger?.Log($"File changed ({backupTypeLabel}, size): {filePath}", LogLevel.Debug);
                             shouldBackup = true;
                         }
-                        else if (fileInfo.LastWriteTimeUtc > previousMetadata.LastModified)
+                        else if (!string.IsNullOrEmpty(previousMetadata.Hash))
                         {
-                            if (!string.IsNullOrEmpty(previousMetadata.Hash))
+                            var currentHash = CalculateFileHash(filePath);
+                            if (!string.IsNullOrEmpty(currentHash))
                             {
-                                var currentHash = CalculateFileHash(filePath);
-                                if (!string.IsNullOrEmpty(currentHash) && currentHash != previousMetadata.Hash)
+                                if (!string.Equals(currentHash, previousMetadata.Hash, StringComparison.OrdinalIgnoreCase))
                                 {
-                                    _logger?.Log($"File changed (Incremental, hash): {filePath}", LogLevel.Debug);
+                                    _logger?.Log($"File changed ({backupTypeLabel}, hash): {filePath}", LogLevel.Debug);
                                     shouldBackup = true;
                                 }
                             }
-                            else
+                            else if (fileInfo.LastWriteTimeUtc > previousMetadata.LastModified)
                             {
-                                _logger?.Log($"File changed (Incremental, timestamp): {filePath}", LogLevel.Debug);
+                                _logger?.Log($"File changed ({backupTypeLabel}, timestamp): {filePath}", LogLevel.Debug);
                                 shouldBackup = true;
                             }
-                        }
-                    }
-                    else if (backupType == BackupType.ChunkSnapshot)
-                    {
-                        if (fileInfo.Length != previousMetadata.Size)
-                        {
-                            _logger?.Log($"File changed (ChunkSnapshot, size): {filePath}", LogLevel.Debug);
-                            shouldBackup = true;
                         }
                         else if (fileInfo.LastWriteTimeUtc > previousMetadata.LastModified)
                         {
-                            var currentHash = CalculateFileHash(filePath);
-                            if (!string.IsNullOrEmpty(currentHash) && currentHash != previousMetadata.Hash)
-                            {
-                                _logger?.Log($"File changed (ChunkSnapshot, hash): {filePath}", LogLevel.Debug);
-                                shouldBackup = true;
-                            }
+                            _logger?.Log($"File changed ({backupTypeLabel}, timestamp): {filePath}", LogLevel.Debug);
+                            shouldBackup = true;
                         }
                     }
                 }
@@ -823,22 +981,28 @@ public partial class SystemState
     {
         return backupHistory.ToDictionary(
             item => item.Key,
-            item => item.Value.Select(backup => new BackupInfo
-            {
-                Path = backup.Path,
-                Timestamp = backup.Timestamp,
-                IsDiff = backup.IsDiff,
-                StorageType = backup.StorageType,
-                SizeBytes = backup.SizeBytes,
-                ArtifactType = backup.ArtifactType,
-                SnapshotId = backup.SnapshotId,
-                ManifestPath = backup.ManifestPath,
-                ChunkIds = [.. backup.ChunkIds],
-                RootHash = backup.RootHash,
-                Encrypted = backup.Encrypted,
-                ChunkStorageNamespace = backup.ChunkStorageNamespace
-            }).ToList(),
+            item => item.Value.Select(CloneBackupInfo).ToList(),
             StringComparer.OrdinalIgnoreCase);
+    }
+
+    private static BackupInfo CloneBackupInfo(BackupInfo backup)
+    {
+        return new BackupInfo
+        {
+            Path = backup.Path,
+            Timestamp = backup.Timestamp,
+            IsDiff = backup.IsDiff,
+            StorageType = backup.StorageType,
+            SizeBytes = backup.SizeBytes,
+            ArtifactType = backup.ArtifactType,
+            SnapshotId = backup.SnapshotId,
+            ManifestPath = backup.ManifestPath,
+            ChunkIds = [.. backup.ChunkIds],
+            RootHash = backup.RootHash,
+            Encrypted = backup.Encrypted,
+            ChunkStorageNamespace = backup.ChunkStorageNamespace,
+            Label = backup.Label
+        };
     }
 
     private static Dictionary<string, int> CloneChunkReferenceCounts(Dictionary<string, int> chunkReferenceCounts)
@@ -860,6 +1024,8 @@ public partial class SystemState
                 UniqueReusedChunks = telemetry.Backup.UniqueReusedChunks,
                 StorageHitChunks = telemetry.Backup.StorageHitChunks,
                 CandidateChunks = telemetry.Backup.CandidateChunks,
+                ReferencedStoredBytes = telemetry.Backup.ReferencedStoredBytes,
+                UploadedStoredBytes = telemetry.Backup.UploadedStoredBytes,
                 LastUpdatedUtc = telemetry.Backup.LastUpdatedUtc
             },
             Restore = new SnapshotRestoreTelemetryAggregate
@@ -1001,6 +1167,9 @@ public class BackupInfo
     public string? RootHash { get; set; }
     public bool Encrypted { get; set; }
     public string? ChunkStorageNamespace { get; set; }
+
+    /// <summary>User-supplied tag, e.g. "before Windows reinstall". Null when unlabelled.</summary>
+    public string? Label { get; set; }
 }
 
 public enum BackupArtifactType

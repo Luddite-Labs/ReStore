@@ -1,6 +1,6 @@
 # GitHub Storage Setup
 
-Use GitHub as a storage backend to leverage version control for your backups. This is best suited for configuration files and smaller backups.
+Use a GitHub repository as a storage backend, which gets you version history over your backups for free. Suited to config files and small backups only — see the size limits below.
 
 ## Step 1: Create a GitHub Account
 
@@ -73,8 +73,8 @@ Open `%USERPROFILE%\ReStore\config.json` and configure the GitHub section:
 
 **Notes:**
 
-- GitHub has file size limits
-- This storage option is best for configuration files, scripts, and smaller backups
+- Uploads are base64 encoded in memory before being sent, so a file near the size limit needs
+  roughly 2.3× its on-disk size in RAM
 - For large file backups, consider using Git LFS or another storage provider
 - Keep your token secure - it provides write access to your repository
 - You can revoke tokens at any time from GitHub Settings > Developer settings

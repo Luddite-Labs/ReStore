@@ -2,11 +2,11 @@
 
 ## Runtime
 
-| Layer           | Technology                            | Version        |
-| --------------- | ------------------------------------- | -------------- |
-| GUI             | WPF (Windows Presentation Foundation) | .NET 9.0       |
-| Core            | .NET Class Library                    | .NET 9.0       |
-| Target Platform | Windows                               | net9.0-windows |
+| Layer           | Technology                            | Version         |
+| --------------- | ------------------------------------- | --------------- |
+| GUI             | WPF (Windows Presentation Foundation) | .NET 10.0       |
+| Core            | .NET Class Library                    | .NET 10.0       |
+| Target Platform | Windows                               | net10.0-windows |
 
 ## GUI Dependencies
 
@@ -38,12 +38,12 @@
 
 ## Build & Packaging
 
-| Tool         | Purpose                       |
-| ------------ | ----------------------------- |
-| MSBuild      | Build system                  |
-| .NET SDK 9.0 | Compilation and runtime       |
-| NuGet        | Package management            |
-| MSIX         | Windows application packaging |
+| Tool          | Purpose                       |
+| ------------- | ----------------------------- |
+| MSBuild       | Build system                  |
+| .NET SDK 10.0 | Compilation and runtime       |
+| NuGet         | Package management            |
+| MSIX          | Windows application packaging |
 
 ## Build Commands
 
@@ -61,6 +61,10 @@ dotnet run --project ReStore.Core -- --help
 dotnet test ReStore.Tests
 ```
 
-## GUI Build Integration
+## Multi-Architecture Builds
 
-The GUI build process automatically copies the CLI to `bin\Debug\cli\restore.exe` via a custom MSBuild target in [ReStore.csproj](../../ReStore/ReStore.csproj). When editing CLI functionality, rebuild both projects.
+Both projects declare `RuntimeIdentifiers=win-x64;win-arm64`. `ReStore.Core` is an executable
+project that the WPF host references as a shared implementation assembly, so `ReStore.csproj`
+sets `ValidateExecutableReferencesMatchSelfContained=false` and forwards its RID to the
+reference. `build-msix.ps1` packages both architectures, and the MSIX registers the `restore`
+execution alias that puts the CLI on `PATH`.

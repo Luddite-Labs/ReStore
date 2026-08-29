@@ -189,7 +189,6 @@ public class SystemProgramDiscovery(ILogger logger)
                 programs.AddRange(GetProgramsFromRegistryPath(Registry.LocalMachine, registryPath));
             }
 
-            // Also check current user installs
             programs.AddRange(GetProgramsFromRegistryPath(Registry.CurrentUser, @"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"));
 
             _logger.Log($"Found {programs.Count} programs via registry", LogLevel.Debug);
@@ -267,7 +266,6 @@ public class SystemProgramDiscovery(ILogger logger)
             return true;
         }
 
-        // Skip if it's a system component
         var systemComponent = subkey.GetValue("SystemComponent");
         if (systemComponent != null && systemComponent.ToString() == "1")
         {
@@ -325,7 +323,6 @@ public class SystemProgramDiscovery(ILogger logger)
 
                 if (process.ExitCode == 0)
                 {
-                    // Winget is available, check each program
                     foreach (var program in programs.Take(10)) // Limit to avoid too many API calls
                     {
                         program.IsWingetAvailable = await CheckSingleProgramWingetAvailability(program.Name);

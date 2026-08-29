@@ -45,20 +45,14 @@ public abstract class StorageBase(ILogger logger) : IStorage
         GC.SuppressFinalize(this);
     }
 
-    // Protected virtual Dispose method for subclasses to override
     protected virtual void Dispose(bool disposing)
     {
         if (_disposed) return;
 
         if (disposing)
         {
-            // Dispose managed state (managed objects).
-            // Subclasses will override this to dispose their specific clients.
             Logger.Log($"Disposing {GetType().Name} resources.", LogLevel.Debug);
         }
-
-        // Free unmanaged resources (unmanaged objects) and override finalizer
-        // Set large fields to null
 
         _disposed = true;
     }

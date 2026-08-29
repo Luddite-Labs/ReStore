@@ -1,4 +1,4 @@
-using System.Collections.ObjectModel;
+﻿using System.Collections.ObjectModel;
 using System.Windows;
 using System.Windows.Controls;
 using Microsoft.Win32;
@@ -11,8 +11,9 @@ namespace ReStore.Views.Pages
     {
         private readonly ThemeSettings _themeSettings;
         private readonly AppSettings _appSettings;
-        private readonly ConfigManager _configManager;
+        private ConfigManager _configManager = null!;
         private bool _isLoading = true;
+        private bool _syncingStorageSelection;
         private readonly ObservableCollection<WatchDirectoryConfig> _watchDirectories = new();
         private readonly ObservableCollection<string> _excludedPatterns = new();
         private readonly ObservableCollection<string> _excludedPaths = new();
@@ -23,7 +24,6 @@ namespace ReStore.Views.Pages
             InitializeComponent();
             _themeSettings = ThemeSettings.Load();
             _appSettings = AppSettings.Load();
-            _configManager = new ConfigManager(new Logger());
 
             WatchDirectoriesList.ItemsSource = _watchDirectories;
             ExcludedPatternsList.ItemsSource = _excludedPatterns;
@@ -33,6 +33,8 @@ namespace ReStore.Views.Pages
             Loaded += async (_, __) =>
             {
                 _isLoading = true;
+
+                _configManager = await AppServices.GetConfigManagerAsync();
 
                 ThemeSelector.SelectedIndex = _themeSettings.Preference switch
                 {
@@ -127,13 +129,28 @@ namespace ReStore.Views.Pages
                 SetContextMenuEnabled(false);
             };
 
-            StorageCombo.SelectionChanged += (_, __) =>
+            StorageCombo.SelectionChanged += async (_, __) =>
             {
+                if (_isLoading || _syncingStorageSelection)
+                    return;
+
                 if (StorageCombo.SelectedItem is string s)
                 {
                     var baseKey = s.Split(' ')[0];
+                    if (!_configManager.StorageSources.ContainsKey(baseKey))
+                    {
+                        MessageBox.Show(
+                            $"Storage provider '{baseKey}' is not configured and cannot be used as the default backup storage.",
+                            "Storage Not Configured",
+                            MessageBoxButton.OK,
+                            MessageBoxImage.Information);
+                        SelectStorageComboItem(_configManager.GlobalStorageType);
+                        return;
+                    }
+
                     _appSettings.DefaultStorage = baseKey;
                     _appSettings.Save();
+                    await SetGlobalStorageTypeAsync(baseKey);
                 }
             };
 
@@ -255,7 +272,6 @@ namespace ReStore.Views.Pages
                 ["bucketName"] = B2BucketName.Text
             });
 
-            // Test handlers
             TestLocalBtn.Click += async (_, __) => await TestProviderAsync("local");
             TestS3Btn.Click += async (_, __) => await TestProviderAsync("s3");
             TestGDriveBtn.Click += async (_, __) => await TestProviderAsync("gdrive");
@@ -266,17 +282,13 @@ namespace ReStore.Views.Pages
             TestSftpBtn.Click += async (_, __) => await TestProviderAsync("sftp");
             TestB2Btn.Click += async (_, __) => await TestProviderAsync("b2");
 
-            // New handlers for watch directories
             AddWatchDirBtn.Click += async (_, __) => await AddWatchDirectoryAsync();
 
-            // New handlers for backup configuration
             SaveBackupConfigBtn.Click += async (_, __) => await SaveBackupConfigurationAsync();
 
-            // New handlers for exclusions
-            AddPatternBtn.Click += (_, __) => AddExcludedPattern();
-            AddPathBtn.Click += (_, __) => AddExcludedPath();
+            AddPatternBtn.Click += async (_, __) => await AddExcludedPatternAsync();
+            AddPathBtn.Click += async (_, __) => await AddExcludedPathAsync();
 
-            // System Backup handlers
             AddSystemProgramBtn.Click += (_, __) => AddExcludeSystemProgram();
             SaveSystemBackupConfigBtn.Click += async (_, __) => await SaveSystemBackupConfigurationAsync();
         }
@@ -337,21 +349,77 @@ namespace ReStore.Views.Pages
 
         private async void GlobalStorageCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
         {
-            if (_isLoading || GlobalStorageCombo.SelectedItem is not string storageType)
+            if (_isLoading || _syncingStorageSelection || GlobalStorageCombo.SelectedItem is not string storageType)
                 return;
 
             try
             {
-                var prop = typeof(ConfigManager).GetProperty("GlobalStorageType");
-                if (prop != null && prop.CanWrite)
-                {
-                    prop.SetValue(_configManager, storageType);
-                    await _configManager.SaveAsync();
-                }
+                await SetGlobalStorageTypeAsync(storageType);
+                _appSettings.DefaultStorage = storageType;
+                _appSettings.Save();
+                SelectStorageComboItem(storageType);
+            }
+            catch (ArgumentException)
+            {
+                MessageBox.Show(
+                    $"Storage provider '{storageType}' is not configured and cannot be used as the default backup storage.",
+                    "Storage Not Configured",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Information);
+                SyncGlobalStorageComboSelection(_configManager.GlobalStorageType);
             }
             catch (System.Exception ex)
             {
                 MessageBox.Show($"Error updating global storage: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+
+        private async Task SetGlobalStorageTypeAsync(string storageType)
+        {
+            _configManager.SetGlobalStorageType(storageType);
+            await _configManager.SaveAsync();
+
+            SyncGlobalStorageComboSelection(storageType);
+        }
+
+        private void SyncGlobalStorageComboSelection(string storageType)
+        {
+            if (!GlobalStorageCombo.Items.Contains(storageType) || Equals(GlobalStorageCombo.SelectedItem, storageType))
+            {
+                return;
+            }
+
+            _syncingStorageSelection = true;
+            try
+            {
+                GlobalStorageCombo.SelectedItem = storageType;
+            }
+            finally
+            {
+                _syncingStorageSelection = false;
+            }
+        }
+
+        private void SelectStorageComboItem(string storageType)
+        {
+            var match = StorageCombo.Items
+                .OfType<string>()
+                .FirstOrDefault(item => item.Equals(storageType, StringComparison.OrdinalIgnoreCase)
+                    || item.StartsWith($"{storageType} ", StringComparison.OrdinalIgnoreCase));
+
+            if (match == null || Equals(StorageCombo.SelectedItem, match))
+            {
+                return;
+            }
+
+            _syncingStorageSelection = true;
+            try
+            {
+                StorageCombo.SelectedItem = match;
+            }
+            finally
+            {
+                _syncingStorageSelection = false;
             }
         }
 
@@ -458,18 +526,15 @@ namespace ReStore.Views.Pages
         {
             try
             {
-                var dialog = new OpenFileDialog
+                var dialog = new OpenFolderDialog
                 {
-                    ValidateNames = false,
-                    CheckFileExists = false,
-                    CheckPathExists = true,
-                    FileName = "Select Folder",
-                    Title = "Select folder to watch"
+                    Title = "Select folder to watch",
+                    Multiselect = false
                 };
 
                 if (dialog.ShowDialog() == true)
                 {
-                    var folderPath = System.IO.Path.GetDirectoryName(dialog.FileName);
+                    var folderPath = dialog.FolderName;
                     if (!string.IsNullOrEmpty(folderPath))
                     {
                         if (!_watchDirectories.Any(w => w.Path == folderPath))
@@ -497,11 +562,11 @@ namespace ReStore.Views.Pages
             }
         }
 
-        private void RemoveWatchDir_Click(object sender, RoutedEventArgs e)
+        private async void RemoveWatchDir_Click(object sender, RoutedEventArgs e)
         {
             if (sender is Button button && button.Tag is string path)
             {
-                _ = RemoveWatchDirectoryAsync(path);
+                await RemoveWatchDirectoryAsync(path);
             }
         }
 
@@ -645,7 +710,9 @@ namespace ReStore.Views.Pages
                 var newJsonString = System.Text.Encoding.UTF8.GetString(stream.ToArray());
                 await System.IO.File.WriteAllTextAsync(configPath, newJsonString);
 
-                await _configManager.LoadAsync();
+                // This path rewrites config.json directly, so the shared instance must be
+                // re-read to pick up what was written.
+                await AppServices.ReloadConfigurationAsync();
                 LoadBackupConfiguration();
 
                 MessageBox.Show("Backup configuration saved successfully.", "Success", MessageBoxButton.OK, MessageBoxImage.Information);
@@ -656,7 +723,7 @@ namespace ReStore.Views.Pages
             }
         }
 
-        private void AddExcludedPattern()
+        private async Task AddExcludedPatternAsync()
         {
             try
             {
@@ -667,7 +734,7 @@ namespace ReStore.Views.Pages
                     {
                         _excludedPatterns.Add(pattern);
                         _configManager.ExcludedPatterns.Add(pattern);
-                        _ = _configManager.SaveAsync();
+                        await _configManager.SaveAsync();
                         NewPatternBox.Text = string.Empty;
                     }
                     else
@@ -682,39 +749,36 @@ namespace ReStore.Views.Pages
             }
         }
 
-        private void RemovePattern_Click(object sender, RoutedEventArgs e)
+        private async void RemovePattern_Click(object sender, RoutedEventArgs e)
         {
             if (sender is Button button && button.Tag is string pattern)
             {
                 _excludedPatterns.Remove(pattern);
                 _configManager.ExcludedPatterns.Remove(pattern);
-                _ = _configManager.SaveAsync();
+                await _configManager.SaveAsync();
             }
         }
 
-        private void AddExcludedPath()
+        private async Task AddExcludedPathAsync()
         {
             try
             {
-                var dialog = new OpenFileDialog
+                var dialog = new OpenFolderDialog
                 {
-                    ValidateNames = false,
-                    CheckFileExists = false,
-                    CheckPathExists = true,
-                    FileName = "Select Folder",
-                    Title = "Select folder to exclude"
+                    Title = "Select folder to exclude",
+                    Multiselect = false
                 };
 
                 if (dialog.ShowDialog() == true)
                 {
-                    var folderPath = System.IO.Path.GetDirectoryName(dialog.FileName);
+                    var folderPath = dialog.FolderName;
                     if (!string.IsNullOrEmpty(folderPath))
                     {
                         if (!_excludedPaths.Contains(folderPath))
                         {
                             _excludedPaths.Add(folderPath);
                             _configManager.ExcludedPaths.Add(folderPath);
-                            _ = _configManager.SaveAsync();
+                            await _configManager.SaveAsync();
                         }
                         else
                         {
@@ -729,13 +793,13 @@ namespace ReStore.Views.Pages
             }
         }
 
-        private void RemovePath_Click(object sender, RoutedEventArgs e)
+        private async void RemovePath_Click(object sender, RoutedEventArgs e)
         {
             if (sender is Button button && button.Tag is string path)
             {
                 _excludedPaths.Remove(path);
                 _configManager.ExcludedPaths.Remove(path);
-                _ = _configManager.SaveAsync();
+                await _configManager.SaveAsync();
             }
         }
 
@@ -746,6 +810,7 @@ namespace ReStore.Views.Pages
                 SystemBackupEnabledCheckBox.IsChecked = _configManager.SystemBackup.Enabled;
                 SystemBackupIncludeProgramsCheckBox.IsChecked = _configManager.SystemBackup.IncludePrograms;
                 SystemBackupIncludeEnvCheckBox.IsChecked = _configManager.SystemBackup.IncludeEnvironmentVariables;
+                SystemBackupIncludeSettingsCheckBox.IsChecked = _configManager.SystemBackup.IncludeWindowsSettings;
                 SystemBackupIntervalHoursBox.Text = _configManager.SystemBackup.BackupInterval.TotalHours.ToString("F1");
 
                 _excludeSystemPrograms.Clear();
@@ -770,17 +835,15 @@ namespace ReStore.Views.Pages
                     return;
                 }
 
-                // Update ConfigManager properties
                 _configManager.SystemBackup.Enabled = SystemBackupEnabledCheckBox.IsChecked ?? false;
                 _configManager.SystemBackup.IncludePrograms = SystemBackupIncludeProgramsCheckBox.IsChecked ?? true;
                 _configManager.SystemBackup.IncludeEnvironmentVariables = SystemBackupIncludeEnvCheckBox.IsChecked ?? true;
+                _configManager.SystemBackup.IncludeWindowsSettings = SystemBackupIncludeSettingsCheckBox.IsChecked ?? true;
                 _configManager.SystemBackup.BackupInterval = TimeSpan.FromHours(hours);
                 _configManager.SystemBackup.ExcludeSystemPrograms.Clear();
                 _configManager.SystemBackup.ExcludeSystemPrograms.AddRange(_excludeSystemPrograms);
 
-                // Save through ConfigManager
                 await _configManager.SaveAsync();
-                await _configManager.LoadAsync();
                 LoadSystemBackupConfiguration();
 
                 MessageBox.Show("System backup configuration saved successfully.", "Success", MessageBoxButton.OK, MessageBoxImage.Information);
@@ -827,7 +890,6 @@ namespace ReStore.Views.Pages
         {
             try
             {
-                await _configManager.LoadAsync();
                 var configured = _configManager.StorageSources.Keys.ToList();
                 var known = new List<string> { "local", "s3", "gdrive", "github", "azure", "gcp", "dropbox", "sftp", "b2" };
                 var sources = _appSettings.ShowOnlyConfiguredProviders
@@ -836,20 +898,29 @@ namespace ReStore.Views.Pages
 
                 // Annotate unconfigured when showing all
                 var annotated = sources.Select(k => configured.Contains(k) ? k : $"{k} (not configured)").ToList();
-                StorageCombo.ItemsSource = annotated;
-
-                string? desired = _appSettings.DefaultStorage;
-                if (!string.IsNullOrEmpty(desired))
+                _syncingStorageSelection = true;
+                try
                 {
-                    var match = annotated.FirstOrDefault(i => i.StartsWith(desired));
-                    if (match != null)
+                    StorageCombo.ItemsSource = annotated;
+
+                    string? desired = _appSettings.DefaultStorage ?? _configManager.GlobalStorageType;
+                    if (!string.IsNullOrEmpty(desired))
                     {
-                        StorageCombo.SelectedItem = match;
+                        var match = annotated.FirstOrDefault(i => i.Equals(desired, StringComparison.OrdinalIgnoreCase)
+                            || i.StartsWith($"{desired} ", StringComparison.OrdinalIgnoreCase));
+                        if (match != null)
+                        {
+                            StorageCombo.SelectedItem = match;
+                        }
+                    }
+                    if (StorageCombo.SelectedItem == null && annotated.Count > 0)
+                    {
+                        StorageCombo.SelectedIndex = 0;
                     }
                 }
-                if (StorageCombo.SelectedItem == null && annotated.Count > 0)
+                finally
                 {
-                    StorageCombo.SelectedIndex = 0;
+                    _syncingStorageSelection = false;
                 }
             }
             catch (System.Exception ex)
@@ -927,7 +998,6 @@ namespace ReStore.Views.Pages
         {
             try
             {
-                await _configManager.LoadAsync();
                 if (_configManager.StorageSources.ContainsKey(key))
                 {
                     _configManager.StorageSources[key].Options = options;
@@ -960,7 +1030,6 @@ namespace ReStore.Views.Pages
         {
             try
             {
-                await _configManager.LoadAsync();
                 var storage = await _configManager.CreateStorageAsync(key);
                 try
                 {
@@ -1141,8 +1210,7 @@ namespace ReStore.Views.Pages
                     var setupWindow = new Windows.EncryptionSetupWindow();
                     if (setupWindow.ShowDialog() == true && setupWindow.Password != null && setupWindow.Salt != null)
                     {
-                        var logger = new Logger();
-                        var encryptionService = new ReStore.Core.src.utils.EncryptionService(logger);
+                        var encryptionService = new ReStore.Core.src.utils.EncryptionService(AppServices.Logger);
                         var verificationToken = encryptionService.CreatePasswordVerificationToken(
                             setupWindow.Password,
                             setupWindow.Salt,

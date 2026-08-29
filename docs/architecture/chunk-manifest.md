@@ -21,6 +21,10 @@ Snapshot artifacts are stored with deterministic paths:
 
 `<group-key>` is derived from the watched directory path and includes a short hash suffix for uniqueness.
 
+Encrypted snapshots insert a namespace segment before the prefix —
+`chunks/enc_<key-hash>/<first-two-hash-bytes>/<chunk-id>.chunk` — so chunks encrypted under
+different passwords never collide in the same store.
+
 ## Manifest Contract
 
 `SnapshotManifest` includes:
@@ -33,9 +37,17 @@ Snapshot artifacts are stored with deterministic paths:
 - `encryptionEnabled`: whether chunk payloads are encrypted
 - `encryptionSalt`: salt used for key derivation (if encrypted)
 - `keyDerivationIterations`: PBKDF2 iterations used for encryption key derivation
+- `chunkStorageNamespace`: subdirectory chunks live under, derived from the encryption key
+  (see Encryption and Deduplication below). Null for unencrypted snapshots
 - `profile`: chunking profile (min/target/max chunk sizes and rolling window)
 - `files[]`: per-file metadata and chunk references
 - `rootHash`: integrity hash over manifest content
+
+Chunking uses an incremental gear-hash (Rabin-Karp style, O(1) per byte) to pick
+content-defined boundaries. Chunk IDs are content hashes, so boundaries are a
+compatibility surface: if the algorithm changes, the same file yields different chunk IDs
+and nothing already in storage can be reused. `ChunkingServiceTests` pins the boundaries
+with a golden vector so such a change cannot land unnoticed.
 
 Each file entry stores:
 
@@ -52,13 +64,17 @@ Each chunk entry stores:
 
 ## Backup Commit Protocol
 
-Backup uses a three-phase commit:
+Backup commits in three phases:
 
-1. Build snapshot manifest and chunk payloads from changed files
-2. Upload only missing chunks (`ExistsAsync` check per chunk)
-3. Upload manifest, then update `HEAD` as final commit pointer
+1. Chunk each file and upload any chunk the provider does not already have (`ExistsAsync`
+   per chunk). Chunks are uploaded as they are produced rather than collected first, so peak
+   memory stays at roughly one chunk instead of scaling with the size of the change set.
+2. Upload the snapshot manifest, which by then references only chunks that are already stored
+3. Update `HEAD` as the final commit pointer
 
-This ordering prevents `HEAD` from pointing to a manifest whose chunks were not uploaded.
+`HEAD` therefore never points at a manifest whose chunks are missing, and cancelling at any
+earlier point leaves `HEAD` on the previous snapshot — an interrupted backup is inert rather
+than half-applied.
 
 ## Integrity Validation
 

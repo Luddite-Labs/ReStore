@@ -30,13 +30,13 @@ public class EncryptionService
 
     public byte[] DeriveKeyFromPassword(string password, byte[] salt, int iterations = DEFAULT_ITERATIONS)
     {
-        using var pbkdf2 = new Rfc2898DeriveBytes(
+        return Rfc2898DeriveBytes.Pbkdf2(
             password,
             salt,
             iterations,
-            HashAlgorithmName.SHA256
+            HashAlgorithmName.SHA256,
+            KEY_SIZE_BYTES
         );
-        return pbkdf2.GetBytes(KEY_SIZE_BYTES);
     }
 
     public static byte[] EncryptChunkDeterministic(byte[] plaintext, byte[] masterKey, string chunkId)
@@ -156,7 +156,6 @@ public class EncryptionService
             using var inputStream = File.OpenRead(inputPath);
             using var outputStream = File.Create(outputPath);
 
-            // Write initial IV (base IV)
             outputStream.Write(iv, 0, iv.Length);
 
             var buffer = new byte[CHUNK_SIZE];
@@ -239,7 +238,6 @@ public class EncryptionService
                     throw new InvalidOperationException("Unexpected EOF reading ciphertext");
                 }
 
-                // Derive unique IV for this chunk
                 var chunkIV = DeriveChunkIV(storedIV, chunkIndex);
 
                 var plaintext = new byte[chunkLength];
@@ -258,10 +256,12 @@ public class EncryptionService
         });
     }
 
+    /// <summary>
+    /// Per-chunk IV: the base IV plus the chunk index. Returns a new array so the caller's
+    /// base IV is left intact, which is what keeps every chunk's IV distinct under one key.
+    /// </summary>
     private static byte[] DeriveChunkIV(byte[] baseIV, long chunkIndex)
     {
-        // Create a new IV for each chunk by adding the chunk index to the base IV
-        // This avoids modifying the original IV array and ensures unique IVs per chunk
         var chunkIV = new byte[IV_SIZE_BYTES];
         Array.Copy(baseIV, chunkIV, IV_SIZE_BYTES);
 

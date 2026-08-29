@@ -17,6 +17,11 @@ public class FileWatcher : IDisposable
     private readonly ConcurrentDictionary<string, string> _renamedFiles = new(StringComparer.OrdinalIgnoreCase);
     private readonly FileSelectionService _fileSelectionService;
     private readonly SemaphoreSlim _backupExecutionLock = new(1, 1);
+
+    // Cancelled on Dispose so a watcher-triggered backup stops promptly on shutdown rather
+    // than running on against a disposed watcher.
+    private readonly CancellationTokenSource _shutdown = new();
+
     private Timer? _backupTimer;
     private readonly TimeSpan _bufferTime = TimeSpan.FromSeconds(10);
     private bool _isDisposed = false;
@@ -87,12 +92,14 @@ public class FileWatcher : IDisposable
     {
         if (_isDisposed) return;
 
-        _renamedFiles[e.FullPath] = e.OldFullPath;
-
+        // Only for paths that will actually be backed up: an excluded rename's entry would
+        // never be consumed and would leak for the process's lifetime.
         if (_fileSelectionService.ShouldExcludeFile(e.FullPath))
         {
             return;
         }
+
+        _renamedFiles[e.FullPath] = e.OldFullPath;
 
         _logger.Log($"File rename detected: {e.OldFullPath} -> {e.FullPath}", LogLevel.Debug);
         _changedFiles.AddOrUpdate(e.FullPath, DateTime.UtcNow, (key, oldValue) => DateTime.UtcNow);
@@ -111,7 +118,7 @@ public class FileWatcher : IDisposable
 
     private async Task ProcessBackupTimerAsync()
     {
-        if (_isDisposed) return;
+        if (_isDisposed || _shutdown.IsCancellationRequested) return;
 
         if (!await _backupExecutionLock.WaitAsync(0))
         {
@@ -153,6 +160,8 @@ public class FileWatcher : IDisposable
 
             foreach (var group in groupedFiles)
             {
+                _shutdown.Token.ThrowIfCancellationRequested();
+
                 var rootDirectory = group.Key;
                 var filesInGroup = group.Select(x => x.Path).ToList();
                 var previousPaths = group
@@ -169,13 +178,21 @@ public class FileWatcher : IDisposable
                         await _systemState.AddOrUpdateFileMetadataAsync(previousPath);
                     }
 
-                    await _backup.BackupFilesAsync(filesInGroup, rootDirectory);
+                    await _backup.BackupFilesAsync(filesInGroup, rootDirectory, null, null, _shutdown.Token);
+                }
+                catch (OperationCanceledException)
+                {
+                    throw;
                 }
                 catch (Exception ex)
                 {
                     _logger.Log($"Error during scheduled backup for {rootDirectory}: {ex.Message}", LogLevel.Error);
                 }
             }
+        }
+        catch (OperationCanceledException)
+        {
+            _logger.Log("Watcher-triggered backup cancelled during shutdown.", LogLevel.Info);
         }
         catch (Exception ex)
         {
@@ -222,6 +239,18 @@ public class FileWatcher : IDisposable
         if (disposing)
         {
             _logger.Log("Disposing FileWatcher resources...", LogLevel.Debug);
+
+            // Signal first, so an in-flight backup stops at its next checkpoint instead of
+            // continuing against watchers that are about to go away.
+            try
+            {
+                _shutdown.Cancel();
+            }
+            catch (ObjectDisposedException)
+            {
+                // Already torn down.
+            }
+
             _backupTimer?.Dispose();
             foreach (var watcher in _watchers)
             {
@@ -231,7 +260,10 @@ public class FileWatcher : IDisposable
             _watchers.Clear();
             _changedFiles.Clear();
             _renamedFiles.Clear();
-            _backupExecutionLock.Dispose();
+
+            // Not disposing _backupExecutionLock: an in-flight backup still holds it and
+            // releases it in its finally, which would throw on a disposed semaphore.
+            _shutdown.Dispose();
             _logger.Log("FileWatcher resources disposed.", LogLevel.Debug);
         }
 

@@ -22,7 +22,8 @@ For building from source, see [Installation Docs](docs/installation.md).
 - **Multi-Cloud Support**: Backup to S3, Google Drive, Azure, Dropbox, and more.
 - **CLI Access**: Full command-line interface for scripting and automation.
 - **System Backup**: Save installed programs, environment variables, and Windows settings.
-- **Smart Backup**: Full, incremental, and chunk snapshot backup selection with content-defined chunk reuse.
+- **Smart Backup**: File backups are chunk snapshots — a point-in-time manifest plus deduplicated chunk objects, so unchanged data is never re-uploaded.
+- **Restore Safety**: Every restore previews what it would touch first, and never replaces an existing file unless you ask it to.
 - **Encryption**: AES-256-GCM encryption for secure backups.
 - **File Sharing**: Right-click in file explorer to share files via your cloud storage.
 
@@ -62,15 +63,14 @@ For building from source, see [Installation Docs](docs/installation.md).
 
 - [Components](docs/architecture/components.md)
 - [Data Flows](docs/architecture/data-flows.md)
-- [Encryption Architecture](docs/architecture/encryption-architecture.md)
+- [Chunk & Manifest Model](docs/architecture/chunk-manifest.md)
+- [Encryption Architecture](docs/architecture/encryption.md)
 - [Configuration & State](docs/architecture/configuration-state.md)
 - [Technology Stack](docs/architecture/technology-stack.md)
 
 **[Development](docs/development.md)**: Project structure and testing.
 
 **[Limitations](docs/limitations.md)**: Known limitations.
-
-Current note: the shipped user-file backup mode is `ChunkSnapshot`, which writes snapshot manifests plus deduplicated chunk objects. Legacy `Differential` configs are migrated to `ChunkSnapshot`, and the standalone binary diff engine remains experimental.
 
 ## License
 

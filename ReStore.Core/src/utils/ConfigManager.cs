@@ -1,5 +1,6 @@
-using System.Text.Json;
+﻿using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Text.RegularExpressions;
 using ReStore.Core.src.storage;
 
 namespace ReStore.Core.src.utils;
@@ -19,6 +20,8 @@ public interface IConfigManager
     EncryptionConfig Encryption { get; }
     RetentionConfig Retention { get; }
     ChunkDiffingConfig ChunkDiffing { get; }
+    VerificationConfig Verification { get; }
+    NotificationConfig Notifications { get; }
     Task LoadAsync();
     Task SaveAsync(string configPath = "");
     Task<IStorage> CreateStorageAsync(string storageType);
@@ -85,7 +88,49 @@ public class ChunkDiffingConfig
     public int MaxFilesPerSnapshot { get; set; } = 200_000;
 }
 
-public class ConfigManager(ILogger logger) : IConfigManager
+/// <summary>
+/// Scheduled verification. Off by default: verifying downloads and decrypts every unique
+/// chunk, which is a real bandwidth cost on egress-billed providers.
+/// </summary>
+public class VerificationConfig
+{
+    public bool Enabled { get; set; } = false;
+
+    /// <summary>Zero or negative disables scheduling, matching <c>backupInterval</c>.</summary>
+    public TimeSpan VerifyInterval { get; set; } = TimeSpan.FromDays(7);
+
+    /// <summary>
+    /// Restricts scheduled verification to local providers. Defaults to true so enabling
+    /// the feature cannot silently start billing a user for cloud egress.
+    /// </summary>
+    public bool LocalStorageOnly { get; set; } = true;
+
+    /// <summary>
+    /// Snapshots to verify per group per due cycle. The newest is always first; any remaining
+    /// budget rotates through older snapshots, oldest-verified first, so bit-rot in an older
+    /// restore point is eventually caught instead of never being looked at.
+    /// </summary>
+    public int SnapshotsPerRun { get; set; } = 2;
+}
+
+/// <summary>
+/// Tray notifications. Deliberately silent on routine success — notifying on every good
+/// backup trains people to ignore the ones that matter.
+/// </summary>
+public class NotificationConfig
+{
+    public bool Enabled { get; set; } = true;
+    public bool NotifyOnBackupFailure { get; set; } = true;
+    public bool NotifyOnVerificationFailure { get; set; } = true;
+
+    /// <summary>Notify on the first success after a run of failures.</summary>
+    public bool NotifyOnRecovery { get; set; } = true;
+
+    /// <summary>Off by default; see the type remark.</summary>
+    public bool NotifyOnEveryBackupSuccess { get; set; } = false;
+}
+
+public partial class ConfigManager(ILogger logger) : IConfigManager
 {
     private static readonly string CONFIG_PATH = GetConfigPath();
     private bool _isLoaded = false;
@@ -103,6 +148,31 @@ public class ConfigManager(ILogger logger) : IConfigManager
 
     public List<WatchDirectoryConfig> WatchDirectories { get; private set; } = [];
     public string GlobalStorageType { get; private set; } = "local";
+
+    /// <summary>
+    /// Sets the default storage provider for anything that doesn't specify its own.
+    /// Validated, because pointing the default at an unconfigured provider makes every
+    /// backup relying on it fail at storage-creation time.
+    /// </summary>
+    /// <exception cref="ArgumentException">
+    /// Empty, or not present in <see cref="StorageSources"/>.
+    /// </exception>
+    public void SetGlobalStorageType(string storageType)
+    {
+        if (string.IsNullOrWhiteSpace(storageType))
+        {
+            throw new ArgumentException("Global storage type cannot be null or empty.", nameof(storageType));
+        }
+
+        if (!StorageSources.ContainsKey(storageType))
+        {
+            throw new ArgumentException(
+                $"Storage type '{storageType}' is not present in the configured storage sources.",
+                nameof(storageType));
+        }
+
+        GlobalStorageType = storageType;
+    }
     public TimeSpan BackupInterval { get; private set; } = TimeSpan.FromHours(1);
     public long SizeThresholdMB { get; private set; } = 500;
     public Dictionary<string, StorageConfig> StorageSources { get; private set; } = [];
@@ -114,6 +184,8 @@ public class ConfigManager(ILogger logger) : IConfigManager
     public EncryptionConfig Encryption { get; private set; } = new();
     public RetentionConfig Retention { get; private set; } = new();
     public ChunkDiffingConfig ChunkDiffing { get; private set; } = new();
+    public VerificationConfig Verification { get; private set; } = new();
+    public NotificationConfig Notifications { get; private set; } = new();
 
     private readonly StorageFactory _storageFactory = new(logger);
     private readonly SemaphoreSlim _saveLock = new(1, 1);
@@ -138,7 +210,6 @@ public class ConfigManager(ILogger logger) : IConfigManager
             throw new ArgumentException($"Storage type '{storageType}' not found in configuration");
         }
 
-        // Make sure Path is included in the options
         if (!string.IsNullOrEmpty(config.Path) && !config.Options.ContainsKey("path"))
         {
             config.Options["path"] = config.Path;
@@ -200,6 +271,8 @@ public class ConfigManager(ILogger logger) : IConfigManager
             LoadEncryptionSettings(root);
             LoadRetentionSettings(root);
             LoadChunkDiffingSettings(root);
+            LoadVerificationSettings(root);
+            LoadNotificationSettings(root);
 
             _isLoaded = true;
             logger.Log("Configuration loaded successfully", LogLevel.Info);
@@ -243,7 +316,7 @@ public class ConfigManager(ILogger logger) : IConfigManager
             {
                 WatchDirectories.Add(new WatchDirectoryConfig
                 {
-                    Path = Environment.ExpandEnvironmentVariables(element.GetString() ?? string.Empty),
+                    Path = ExpandConfiguredPath(element.GetString() ?? string.Empty),
                     StorageType = null
                 });
             }
@@ -252,7 +325,7 @@ public class ConfigManager(ILogger logger) : IConfigManager
                 var config = JsonSerializer.Deserialize<WatchDirectoryConfig>(element, _readOptions);
                 if (config != null)
                 {
-                    config.Path = Environment.ExpandEnvironmentVariables(config.Path);
+                    config.Path = ExpandConfiguredPath(config.Path);
                     WatchDirectories.Add(config);
                 }
             }
@@ -284,8 +357,8 @@ public class ConfigManager(ILogger logger) : IConfigManager
 
         foreach (var source in StorageSources.Values)
         {
-            source.Path = Environment.ExpandEnvironmentVariables(source.Path);
-            source.Options = source.Options.ToDictionary(x => x.Key, x => Environment.ExpandEnvironmentVariables(x.Value));
+            source.Path = ExpandConfiguredPath(source.Path);
+            source.Options = source.Options.ToDictionary(x => x.Key, x => ExpandConfiguredPath(x.Value));
         }
     }
 
@@ -303,7 +376,7 @@ public class ConfigManager(ILogger logger) : IConfigManager
         if (root.TryGetProperty("excludedPaths", out var excludedPathsElement))
         {
             ExcludedPaths = JsonSerializer.Deserialize<List<string>>(excludedPathsElement, _readOptions) ?? [];
-            ExcludedPaths = ExcludedPaths.Select(p => Environment.ExpandEnvironmentVariables(p)).ToList();
+            ExcludedPaths = ExcludedPaths.Select(ExpandConfiguredPath).ToList();
         }
         else
         {
@@ -442,6 +515,56 @@ public class ConfigManager(ILogger logger) : IConfigManager
             ChunkDiffing.MaxFilesPerSnapshot = maxFilesPerSnapshot.GetInt32();
     }
 
+    private void LoadVerificationSettings(JsonElement root)
+    {
+        Verification = new VerificationConfig();
+
+        if (!root.TryGetProperty("verification", out var verificationElement))
+        {
+            return;
+        }
+
+        if (verificationElement.TryGetProperty("enabled", out var enabled))
+            Verification.Enabled = enabled.GetBoolean();
+
+        if (verificationElement.TryGetProperty("verifyInterval", out var verifyInterval)
+            && TimeSpan.TryParse(verifyInterval.GetString(), out var parsedInterval))
+        {
+            Verification.VerifyInterval = parsedInterval;
+        }
+
+        if (verificationElement.TryGetProperty("localStorageOnly", out var localOnly))
+            Verification.LocalStorageOnly = localOnly.GetBoolean();
+
+        if (verificationElement.TryGetProperty("snapshotsPerRun", out var snapshotsPerRun))
+            Verification.SnapshotsPerRun = snapshotsPerRun.GetInt32();
+    }
+
+    private void LoadNotificationSettings(JsonElement root)
+    {
+        Notifications = new NotificationConfig();
+
+        if (!root.TryGetProperty("notifications", out var notificationsElement))
+        {
+            return;
+        }
+
+        if (notificationsElement.TryGetProperty("enabled", out var enabled))
+            Notifications.Enabled = enabled.GetBoolean();
+
+        if (notificationsElement.TryGetProperty("notifyOnBackupFailure", out var onBackupFailure))
+            Notifications.NotifyOnBackupFailure = onBackupFailure.GetBoolean();
+
+        if (notificationsElement.TryGetProperty("notifyOnVerificationFailure", out var onVerifyFailure))
+            Notifications.NotifyOnVerificationFailure = onVerifyFailure.GetBoolean();
+
+        if (notificationsElement.TryGetProperty("notifyOnRecovery", out var onRecovery))
+            Notifications.NotifyOnRecovery = onRecovery.GetBoolean();
+
+        if (notificationsElement.TryGetProperty("notifyOnEveryBackupSuccess", out var onEverySuccess))
+            Notifications.NotifyOnEveryBackupSuccess = onEverySuccess.GetBoolean();
+    }
+
     public async Task SaveAsync(string configPath = "")
     {
         await _saveLock.WaitAsync();
@@ -482,6 +605,21 @@ public class ConfigManager(ILogger logger) : IConfigManager
                     rollingHashWindowSize = ChunkDiffing.RollingHashWindowSize,
                     maxChunksPerFile = ChunkDiffing.MaxChunksPerFile,
                     maxFilesPerSnapshot = ChunkDiffing.MaxFilesPerSnapshot
+                },
+                verification = new
+                {
+                    enabled = Verification.Enabled,
+                    verifyInterval = Verification.VerifyInterval.ToString(),
+                    localStorageOnly = Verification.LocalStorageOnly,
+                    snapshotsPerRun = Verification.SnapshotsPerRun
+                },
+                notifications = new
+                {
+                    enabled = Notifications.Enabled,
+                    notifyOnBackupFailure = Notifications.NotifyOnBackupFailure,
+                    notifyOnVerificationFailure = Notifications.NotifyOnVerificationFailure,
+                    notifyOnRecovery = Notifications.NotifyOnRecovery,
+                    notifyOnEveryBackupSuccess = Notifications.NotifyOnEveryBackupSuccess
                 },
                 systemBackup = new
                 {
@@ -571,7 +709,6 @@ public class ConfigManager(ILogger logger) : IConfigManager
         var configDir = Path.GetDirectoryName(CONFIG_PATH)!;
         Directory.CreateDirectory(configDir);
 
-        // Try to copy config.example.json from the application directory
         var examplePath = ConfigInitializer.ResolveApplicationExampleConfigPath();
         if (examplePath != null && File.Exists(examplePath))
         {
@@ -596,17 +733,17 @@ public class ConfigManager(ILogger logger) : IConfigManager
         [
             new WatchDirectoryConfig
             {
-                Path = Environment.ExpandEnvironmentVariables("%USERPROFILE%\\Desktop"),
+                Path = ExpandConfiguredPath("%USERPROFILE%\\Desktop"),
                 StorageType = null
             },
             new WatchDirectoryConfig
             {
-                Path = Environment.ExpandEnvironmentVariables("%USERPROFILE%\\Documents"),
+                Path = ExpandConfiguredPath("%USERPROFILE%\\Documents"),
                 StorageType = null
             },
             new WatchDirectoryConfig
             {
-                Path = Environment.ExpandEnvironmentVariables("%USERPROFILE%\\Pictures"),
+                Path = ExpandConfiguredPath("%USERPROFILE%\\Pictures"),
                 StorageType = null
             }
         ];
@@ -617,10 +754,10 @@ public class ConfigManager(ILogger logger) : IConfigManager
         {
             ["local"] = new StorageConfig
             {
-                Path = Environment.ExpandEnvironmentVariables("%USERPROFILE%\\ReStoreBackups"),
+                Path = ExpandConfiguredPath("%USERPROFILE%\\ReStoreBackups"),
                 Options = new Dictionary<string, string>
                 {
-                    ["path"] = Environment.ExpandEnvironmentVariables("%USERPROFILE%\\ReStoreBackups")
+                    ["path"] = ExpandConfiguredPath("%USERPROFILE%\\ReStoreBackups")
                 }
             }
         };
@@ -657,13 +794,43 @@ public class ConfigManager(ILogger logger) : IConfigManager
         [
             Path.Combine(userProfile, "Documents", "Temp"),
             Path.Combine(userProfile, "Downloads"),
-            Environment.ExpandEnvironmentVariables("%TEMP%"),
-            Environment.ExpandEnvironmentVariables("%LOCALAPPDATA%\\Temp"),
-            Environment.ExpandEnvironmentVariables("%WINDIR%"),
-            Environment.ExpandEnvironmentVariables("%ProgramFiles%"),
-            Environment.ExpandEnvironmentVariables("%ProgramFiles(x86)%")
+            ExpandConfiguredPath("%TEMP%"),
+            ExpandConfiguredPath("%LOCALAPPDATA%\\Temp"),
+            ExpandConfiguredPath("%WINDIR%"),
+            ExpandConfiguredPath("%ProgramFiles%"),
+            ExpandConfiguredPath("%ProgramFiles(x86)%")
         ];
     }
+
+    private static string ExpandConfiguredPath(string value)
+    {
+        var expanded = Environment.ExpandEnvironmentVariables(value);
+        return WindowsEnvironmentVariablePattern().Replace(expanded, match =>
+        {
+            var variableName = match.Groups[1].Value;
+            return ResolveEnvironmentVariable(variableName) ?? match.Value;
+        });
+    }
+
+    private static string? ResolveEnvironmentVariable(string variableName)
+    {
+        var value = Environment.GetEnvironmentVariable(variableName);
+        if (!string.IsNullOrEmpty(value))
+        {
+            return value;
+        }
+
+        return variableName.ToUpperInvariant() switch
+        {
+            "TEMP" or "TMP" => Path.GetTempPath().TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar),
+            "USERPROFILE" => Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+            "LOCALAPPDATA" => Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            _ => null
+        };
+    }
+
+    [GeneratedRegex("%([^%]+)%")]
+    private static partial Regex WindowsEnvironmentVariablePattern();
 
     private void SetDefaultSystemBackupConfig()
     {

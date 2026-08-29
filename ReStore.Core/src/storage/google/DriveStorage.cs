@@ -1,4 +1,4 @@
-using Google.Apis.Auth.OAuth2;
+﻿using Google.Apis.Auth.OAuth2;
 using Google.Apis.Drive.v3;
 using Google.Apis.Services;
 using Google.Apis.Upload;
@@ -49,7 +49,6 @@ public class DriveStorage(ILogger logger) : StorageBase(logger)
                 ClientSecret = options["client_secret"]
             };
 
-            // Use a custom token folder if specified
             string tokenFolder = options.TryGetValue("token_folder", out var folder)
                 ? folder
                 : "Drive.Storage.Token";
@@ -68,7 +67,6 @@ public class DriveStorage(ILogger logger) : StorageBase(logger)
                 ApplicationName = "ReStore Backup"
             });
 
-            // Use custom backup folder name if provided
             string backupFolderName = options.TryGetValue("backup_folder_name", out var customName)
                 ? customName
                 : BACKUP_FOLDER_NAME;
@@ -133,37 +131,73 @@ public class DriveStorage(ILogger logger) : StorageBase(logger)
     {
         try
         {
-            // Create necessary folders in the path
             string parentId = await EnsureDirectoryPathExistsAsync(remotePath);
+            var fileName = Path.GetFileName(remotePath);
+            var existingFileIds = await GetFileIdsByNameInParentAsync(fileName, parentId);
 
             var fileMetadata = new Google.Apis.Drive.v3.Data.File
             {
-                Name = Path.GetFileName(remotePath),
-                Parents = [parentId]
+                Name = fileName
             };
 
-            using var stream = new FileStream(localPath, FileMode.Open);
-            var request = _driveService!.Files.Create(fileMetadata, stream, GetMimeType(localPath));
-            request.Fields = "id, name, size";
+            using var stream = new FileStream(localPath, FileMode.Open, FileAccess.Read, FileShare.Read);
 
-            // Setup progress tracking
-            var progress = new Progress<IUploadProgress>(p =>
+            void ReportProgress(IUploadProgress p)
             {
-                if (p.Status == UploadStatus.Uploading && p.BytesSent > 0)
+                if (p.Status == UploadStatus.Uploading && p.BytesSent > 0 && stream.Length > 0)
                 {
                     var percentComplete = (int)((double)p.BytesSent / stream.Length * 100);
                     Logger.Log($"Uploading {Path.GetFileName(localPath)}: {percentComplete}%", LogLevel.Debug);
                 }
-            });
+            }
 
-            var result = await ExecuteWithRetryAsync(async () =>
+            IUploadProgress result;
+            if (existingFileIds.Count > 0)
             {
-                return await request.UploadAsync(CancellationToken.None);
-            });
+                var updateRequest = _driveService!.Files.Update(fileMetadata, existingFileIds[0], stream, GetMimeType(localPath));
+                updateRequest.Fields = "id, name, size";
+                updateRequest.ProgressChanged += ReportProgress;
+
+                result = await ExecuteWithRetryAsync(async () =>
+                {
+                    // Each retry must resend from the start.
+                    stream.Position = 0;
+                    return await updateRequest.UploadAsync(CancellationToken.None);
+                });
+            }
+            else
+            {
+                fileMetadata.Parents = [parentId];
+                var createRequest = _driveService!.Files.Create(fileMetadata, stream, GetMimeType(localPath));
+                createRequest.Fields = "id, name, size";
+                createRequest.ProgressChanged += ReportProgress;
+
+                result = await ExecuteWithRetryAsync(async () =>
+                {
+                    stream.Position = 0;
+                    return await createRequest.UploadAsync(CancellationToken.None);
+                });
+            }
 
             if (result.Status != UploadStatus.Completed)
             {
                 throw new Exception($"Upload failed: {result.Status} - {result.Exception?.Message}");
+            }
+
+            foreach (var duplicateFileId in existingFileIds.Skip(1))
+            {
+                try
+                {
+                    await ExecuteWithRetryAsync(async () =>
+                    {
+                        await _driveService!.Files.Delete(duplicateFileId).ExecuteAsync();
+                        return true;
+                    });
+                }
+                catch (Exception ex)
+                {
+                    Logger.Log($"Failed to delete duplicate Google Drive file for {remotePath}: {ex.Message}", LogLevel.Warning);
+                }
             }
 
             Logger.Log($"Successfully uploaded {Path.GetFileName(localPath)} to Google Drive", LogLevel.Info);
@@ -179,7 +213,6 @@ public class DriveStorage(ILogger logger) : StorageBase(logger)
     {
         try
         {
-            // Create local directory if it doesn't exist
             Directory.CreateDirectory(Path.GetDirectoryName(localPath)!);
 
             var fileId = await GetFileIdByPathAsync(remotePath);
@@ -189,6 +222,9 @@ public class DriveStorage(ILogger logger) : StorageBase(logger)
 
             await ExecuteWithRetryAsync(async () =>
             {
+                // Discard whatever a failed attempt wrote.
+                stream.Position = 0;
+                stream.SetLength(0);
                 await request.DownloadAsync(stream);
                 return true;
             });
@@ -249,10 +285,8 @@ public class DriveStorage(ILogger logger) : StorageBase(logger)
             throw new ArgumentException("Invalid remote path");
         }
 
-        // Get the file name (last part of the path)
         string fileName = pathParts[^1];
 
-        // Get the parent folder ID by traversing the path
         string parentId = _backupFolderId;
         if (pathParts.Length > 1)
         {
@@ -260,24 +294,31 @@ public class DriveStorage(ILogger logger) : StorageBase(logger)
             parentId = await GetFolderIdByPathAsync(dirPath);
         }
 
-        // Search for the file in the parent folder
-        var listRequest = _driveService!.Files.List();
-        listRequest.Q = $"name='{EscapeDriveQueryValue(fileName)}' and '{parentId}' in parents and trashed=false";
-        listRequest.Fields = "files(id, name)";
-
-        var files = await ExecuteWithRetryAsync(async () => await listRequest.ExecuteAsync());
-
-        if (files.Files.Count == 0)
+        var fileIds = await GetFileIdsByNameInParentAsync(fileName, parentId);
+        if (fileIds.Count == 0)
         {
             throw new FileNotFoundException($"File {fileName} not found in Google Drive path {remotePath}");
         }
 
-        return files.Files[0].Id;
+        return fileIds[0];
+    }
+
+    private async Task<List<string>> GetFileIdsByNameInParentAsync(string fileName, string parentId)
+    {
+        var listRequest = _driveService!.Files.List();
+        listRequest.Q = $"name='{EscapeDriveQueryValue(fileName)}' and '{parentId}' in parents and trashed=false";
+        listRequest.Fields = "files(id, name, modifiedTime)";
+        listRequest.OrderBy = "modifiedTime desc";
+
+        var files = await ExecuteWithRetryAsync(async () => await listRequest.ExecuteAsync());
+        return files.Files
+            .Where(file => !string.IsNullOrWhiteSpace(file.Id))
+            .Select(file => file.Id)
+            .ToList();
     }
 
     private async Task<string> GetFolderIdByPathAsync(string folderPath)
     {
-        // Check cache first
         if (TryGetCachedFolderId(folderPath, out var cachedId))
         {
             return cachedId!;
@@ -291,7 +332,6 @@ public class DriveStorage(ILogger logger) : StorageBase(logger)
         {
             currentPath = string.IsNullOrEmpty(currentPath) ? folderName : currentPath + "/" + folderName;
 
-            // Check cache again for partial path
             if (TryGetCachedFolderId(currentPath, out var partialCachedId))
             {
                 currentParentId = partialCachedId!;
@@ -311,7 +351,6 @@ public class DriveStorage(ILogger logger) : StorageBase(logger)
 
             currentParentId = folders.Files[0].Id;
 
-            // Cache the folder ID
             CacheFolderId(currentPath, currentParentId);
         }
 
@@ -338,14 +377,12 @@ public class DriveStorage(ILogger logger) : StorageBase(logger)
         {
             currentPath = string.IsNullOrEmpty(currentPath) ? folderName : currentPath + "/" + folderName;
 
-            // Check if folder exists
             try
             {
                 currentParentId = await GetFolderIdByPathAsync(currentPath);
             }
             catch (DirectoryNotFoundException)
             {
-                // Create folder if it doesn't exist
                 var folderMetadata = new Google.Apis.Drive.v3.Data.File
                 {
                     Name = folderName,
@@ -359,7 +396,6 @@ public class DriveStorage(ILogger logger) : StorageBase(logger)
                 var folder = await ExecuteWithRetryAsync(async () => await request.ExecuteAsync());
                 currentParentId = folder.Id;
 
-                // Cache the new folder ID
                 CacheFolderId(currentPath, currentParentId);
             }
         }
@@ -379,9 +415,15 @@ public class DriveStorage(ILogger logger) : StorageBase(logger)
             }
             catch (Exception ex)
             {
-                if (attempt >= MAX_RETRY_ATTEMPTS)
+                // Retrying a permanent error (bad credentials, missing file, revoked access)
+                // just delays the inevitable failure by the full backoff budget.
+                if (attempt >= MAX_RETRY_ATTEMPTS || !IsTransient(ex))
                 {
-                    Logger.Log($"Operation failed after {MAX_RETRY_ATTEMPTS} attempts: {ex.Message}", LogLevel.Error);
+                    if (attempt > 1)
+                    {
+                        Logger.Log($"Operation failed after {attempt} attempt(s): {ex.Message}", LogLevel.Error);
+                    }
+
                     throw;
                 }
 
@@ -390,6 +432,29 @@ public class DriveStorage(ILogger logger) : StorageBase(logger)
                 await Task.Delay(delayMs);
             }
         }
+    }
+
+    /// <summary>
+    /// Transient means "the same call could plausibly succeed shortly": rate limits, server
+    /// faults, timeouts and transport errors. Auth and not-found failures are not.
+    /// </summary>
+    private static bool IsTransient(Exception exception)
+    {
+        return exception switch
+        {
+            Google.GoogleApiException apiException => apiException.HttpStatusCode is
+                System.Net.HttpStatusCode.RequestTimeout
+                or System.Net.HttpStatusCode.TooManyRequests
+                or System.Net.HttpStatusCode.InternalServerError
+                or System.Net.HttpStatusCode.BadGateway
+                or System.Net.HttpStatusCode.ServiceUnavailable
+                or System.Net.HttpStatusCode.GatewayTimeout,
+            HttpRequestException => true,
+            TaskCanceledException => true,
+            TimeoutException => true,
+            IOException => true,
+            _ => false
+        };
     }
 
     private string GetMimeType(string filePath)
@@ -417,16 +482,12 @@ public class DriveStorage(ILogger logger) : StorageBase(logger)
 
         if (disposing)
         {
-            // Dispose managed state (managed objects).
             _driveService?.Dispose();
-            _driveService = null; // Set to null after disposal
+            _driveService = null;
             Logger.Log("Disposed DriveService.", LogLevel.Debug);
         }
 
-        // Free unmanaged resources (unmanaged objects) and override finalizer
-        // Set large fields to null
-
         _disposed = true;
-        base.Dispose(disposing); // Call base class implementation
+        base.Dispose(disposing);
     }
 }

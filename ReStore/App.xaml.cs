@@ -43,14 +43,14 @@ namespace ReStore
 
             base.OnStartup(e);
 
-            var startupLogger = new Logger();
-            var configSetupResult = ConfigInitializer.EnsureConfigurationSetup(startupLogger);
+            var configSetupResult = ConfigInitializer.EnsureConfigurationSetup(AppServices.Logger);
             ConfigMigrationResult? configMigrationResult = null;
 
             try
             {
-                var startupConfigManager = new ConfigManager(startupLogger);
-                await startupConfigManager.LoadAsync();
+                // Warms the shared instance so pages reuse this load rather than each
+                // re-reading config.json; also surfaces migration results up front.
+                var startupConfigManager = await AppServices.GetConfigManagerAsync();
                 configMigrationResult = startupConfigManager.LastMigrationResult;
             }
             catch (Exception ex)
@@ -63,9 +63,12 @@ namespace ReStore
                     MessageBoxImage.Warning);
             }
 
-            var lifecycleMessage = BuildConfigurationLifecycleMessage(configSetupResult, configMigrationResult);
+            var lifecycleMessage = ConfigLifecycleNotice.Build(
+                configSetupResult,
+                configMigrationResult,
+                ConfigInitializer.GetUserConfigPath(),
+                suppressConfigCreatedNotice: await FirstRunSetupIsPendingAsync());
 
-            // Initialize global password provider
             GlobalPasswordProvider = new GuiPasswordProvider();
 
             AppDomain.CurrentDomain.UnhandledException += (_, args) =>
@@ -81,7 +84,6 @@ namespace ReStore
                 args.Handled = true;
             };
 
-            // Load and apply persisted theme preference
             var theme = ThemeSettings.Load();
             theme.Apply();
 
@@ -151,6 +153,13 @@ namespace ReStore
                 catch (Exception ex)
                 {
                     Trace.WriteLine($"Pipe server error: {ex}");
+
+                    // A failure that recurs immediately (name already taken, ACL rejection)
+                    // would otherwise spin this thread at full speed for the app's lifetime.
+                    if (_isRunning)
+                    {
+                        Thread.Sleep(500);
+                    }
                 }
             }
         }
@@ -218,11 +227,8 @@ namespace ReStore
         {
             try
             {
-                var logger = new ReStore.Core.src.utils.Logger();
-                var configManager = new ReStore.Core.src.utils.ConfigManager(logger);
-                await configManager.LoadAsync();
-
-                var shareService = new ReStore.Core.src.sharing.ShareService(configManager, logger);
+                var configManager = await AppServices.GetConfigManagerAsync();
+                var shareService = new ReStore.Core.src.sharing.ShareService(configManager, AppServices.Logger);
 
                 await Dispatcher.InvokeAsync(() =>
                 {
@@ -299,36 +305,35 @@ namespace ReStore
             base.OnExit(e);
         }
 
-        private static string? BuildConfigurationLifecycleMessage(
-            ConfigSetupResult setupResult,
-            ConfigMigrationResult? migrationResult)
+        /// <summary>
+        /// Whether the Dashboard is about to open the first-run wizard. The wizard explains setup
+        /// far better than a bare "config created" alert, and stacking both means the user dismisses
+        /// a dialog before seeing the one that matters.
+        /// </summary>
+        private static async Task<bool> FirstRunSetupIsPendingAsync()
         {
-            var lines = new List<string>();
-
-            if (setupResult.ConfigCreated)
+            try
             {
-                lines.Add("Created your initial configuration file.");
-                lines.Add($"Path: {ConfigInitializer.GetUserConfigPath()}");
-            }
+                var configManager = await AppServices.GetConfigManagerAsync();
+                var state = await AppServices.GetSystemStateAsync();
 
-            if (migrationResult?.MigrationApplied == true)
+                var localBackupDirectoryExists =
+                    configManager.StorageSources.TryGetValue("local", out var localConfig)
+                    && !string.IsNullOrWhiteSpace(localConfig.Path)
+                    && Directory.Exists(Environment.ExpandEnvironmentVariables(localConfig.Path));
+
+                return FirstRunDetector.NeedsSetup(
+                    configManager.StorageSources,
+                    localBackupDirectoryExists,
+                    state.GetTotalBackupCount());
+            }
+            catch (Exception ex)
             {
-                lines.Add($"Upgraded configuration schema from v{migrationResult.SourceSchemaVersion} to v{migrationResult.TargetSchemaVersion}.");
-
-                if (!string.IsNullOrWhiteSpace(migrationResult.BackupPath))
-                {
-                    lines.Add($"Backup: {migrationResult.BackupPath}");
-                }
+                // Never let this gate startup; worst case the user sees the extra notice.
+                Trace.WriteLine($"First-run check for startup notice failed: {ex}");
+                return false;
             }
-
-            if (lines.Count == 0)
-            {
-                return null;
-            }
-
-            lines.Add(string.Empty);
-            lines.Add("Open Settings to review or adjust your configuration.");
-            return string.Join(Environment.NewLine, lines);
         }
+
     }
 }

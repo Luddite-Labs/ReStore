@@ -1,7 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
     <PropertyGroup>
         <OutputType>WinExe</OutputType>
-        <TargetFramework>net9.0-windows</TargetFramework>
+        <TargetFramework>net10.0-windows</TargetFramework>
         <UseWPF>true</UseWPF>
         <Nullable>enable</Nullable>
         <ImplicitUsings>enable</ImplicitUsings>
@@ -14,7 +14,10 @@
         <WindowsPackageType>MSIX</WindowsPackageType>
         <WindowsAppSDKSelfContained>true</WindowsAppSDKSelfContained>
         <SelfContained>true</SelfContained>
-        <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+        <!-- ReStore.Core is an executable project that the WPF host references as a shared implementation assembly. -->
+        <ValidateExecutableReferencesMatchSelfContained>false</ValidateExecutableReferencesMatchSelfContained>
+        <RuntimeIdentifier Condition="'$(RuntimeIdentifier)' == ''">win-x64</RuntimeIdentifier>
+        <RuntimeIdentifiers>win-x64;win-arm64</RuntimeIdentifiers>
         <PublishSingleFile>false</PublishSingleFile>
         <PublishReadyToRun>false</PublishReadyToRun>
 
@@ -29,7 +32,7 @@
 
         <!-- Application Identity -->
         <PackageId>ReStore</PackageId>
-        <Version>1.6.0</Version>
+        <Version>1.7.0</Version>
         <Authors>Jaskaran Singh</Authors>
         <Company>Jaskaran Singh</Company>
         <Product>ReStore</Product>
@@ -39,7 +42,7 @@
         <RepositoryUrl>https://github.com/js302/ReStore</RepositoryUrl>
     </PropertyGroup>
     <ItemGroup>
-        <ProjectReference Include="..\ReStore.Core\ReStore.Core.csproj" />
+        <ProjectReference Include="..\ReStore.Core\ReStore.Core.csproj" AdditionalProperties="RuntimeIdentifier=$(RuntimeIdentifier);SelfContained=$(SelfContained)" />
         <PackageReference Include="WPF-UI" Version="4.0.3" />
         <PackageReference Include="Hardcodet.NotifyIcon.Wpf" Version="1.1.0" />
     </ItemGroup>

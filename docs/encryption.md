@@ -1,16 +1,25 @@
 # Backup Encryption
 
-ReStore supports enterprise-grade AES-256-GCM encryption to secure your backups with password protection. This feature is available for both file backups and system backups.
+ReStore encrypts backups with AES-256-GCM under a password you choose. This covers both file
+backups and system backups.
 
 ## Encryption Features
 
 - **Algorithm**: AES-256-GCM (Galois/Counter Mode) - provides both confidentiality and authentication
 - **Key Derivation**: PBKDF2-SHA256 with 1,000,000 iterations for secure password-based key generation
-- **Hybrid Architecture**: Each backup uses a unique Data Encryption Key (DEK) that is encrypted with a Key Encryption Key (KEK) derived from your password
 - **Authenticated Encryption**: Built-in authentication prevents tampering with encrypted backups
 - **Artifact Format**:
   - User-file backups: encrypted deterministic chunk objects referenced by snapshot manifests
   - System backups: encrypted `.enc` archives with `.enc.meta` metadata files
+
+The two artifact types protect their payloads differently:
+
+- **Chunk objects** derive a per-chunk key and IV from the master key and the chunk's own
+  content hash (HMAC-SHA256). Because identical plaintext always yields identical ciphertext,
+  deduplication keeps working on encrypted backups — which a random IV per chunk would break.
+- **System archives** use a per-archive random Data Encryption Key, itself wrapped with a Key
+  Encryption Key derived from your password. The wrapped key and IV live in the `.enc.meta`
+  file beside the archive.
 
 ## Enabling Encryption
 

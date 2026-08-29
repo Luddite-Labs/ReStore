@@ -51,6 +51,7 @@ public partial class ShareWindow : FluentWindow
             string link = await _shareService.ShareFileAsync(_filePath, storageType, TimeSpan.FromDays(7));
 
             LinkBox.Text = link;
+            ExpiryText.Text = GetExpiryDescription(storageType);
             ResultPanel.Visibility = Visibility.Visible;
             ShareButton.Visibility = Visibility.Collapsed;
         }
@@ -69,6 +70,13 @@ public partial class ShareWindow : FluentWindow
         ProgressBar.Visibility = isLoading ? Visibility.Visible : Visibility.Collapsed;
         StorageProviderCombo.IsEnabled = !isLoading;
         ShareButton.IsEnabled = !isLoading;
+    }
+
+    private static string GetExpiryDescription(string storageType)
+    {
+        return storageType.Equals("dropbox", StringComparison.OrdinalIgnoreCase)
+            ? "Dropbox shared links do not expire automatically."
+            : "Link expires in 7 days.";
     }
 
     private void CopyLink_Click(object sender, RoutedEventArgs e)

@@ -1,4 +1,5 @@
 using System.IO;
+using System.Diagnostics;
 using System.Text.Json;
 
 namespace ReStore.Services
@@ -27,7 +28,10 @@ namespace ReStore.Services
                     if (s != null) return s;
                 }
             }
-            catch { }
+            catch (Exception ex)
+            {
+                Trace.TraceWarning($"Failed to load app settings from {SettingsPath}: {ex.Message}");
+            }
             return new AppSettings();
         }
 
@@ -39,7 +43,10 @@ namespace ReStore.Services
                 var json = JsonSerializer.Serialize(this, new JsonSerializerOptions { WriteIndented = true });
                 File.WriteAllText(SettingsPath, json);
             }
-            catch { }
+            catch (Exception ex)
+            {
+                Trace.TraceWarning($"Failed to save app settings to {SettingsPath}: {ex.Message}");
+            }
         }
     }
 }

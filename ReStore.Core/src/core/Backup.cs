@@ -34,7 +34,11 @@ public class Backup
         _retentionManager = new RetentionManager(_logger, _config, _state);
     }
 
-    public async Task BackupDirectoryAsync(string sourceDirectory, string? storageTypeOverride = null)
+    public async Task BackupDirectoryAsync(
+        string sourceDirectory,
+        string? storageTypeOverride = null,
+        IProgress<BackupProgress>? progress = null,
+        CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(sourceDirectory))
         {
@@ -51,10 +55,14 @@ public class Backup
                 throw new DirectoryNotFoundException($"Source directory not found: {sourceDirectory}");
             }
 
+            cancellationToken.ThrowIfCancellationRequested();
+
             var storageType = storageTypeOverride ?? GetStorageTypeForDirectory(sourceDirectory);
             storage = await _config.CreateStorageAsync(storageType);
 
             _logger.Log($"Starting backup of {sourceDirectory} using {storageType} storage");
+
+            progress?.Report(new BackupProgress(sourceDirectory, 0, 0, 0, 0, BackupPhase.Enumerating));
 
             _sizeAnalyzer.SizeThreshold = _config.SizeThresholdMB * 1024 * 1024;
             var (size, exceedsThreshold) = await _sizeAnalyzer.AnalyzeDirectoryAsync(sourceDirectory);
@@ -63,6 +71,8 @@ public class Backup
             {
                 _logger.Log($"Warning: Directory size ({size} bytes) exceeds threshold");
             }
+
+            cancellationToken.ThrowIfCancellationRequested();
 
             var allFiles = GetFilesInDirectory(sourceDirectory);
 
@@ -87,7 +97,7 @@ public class Backup
             }
 
             _logger.Log($"Preparing to build snapshot manifest for {sourceDirectory}. Changed files: {filesToBackup.Count}, removed files: {filesToRemove.Count}", LogLevel.Info);
-            await CreateSnapshotBackupAsync(sourceDirectory, allFiles, filesToBackup, storage, storageType);
+            await CreateSnapshotBackupAsync(sourceDirectory, allFiles, filesToBackup, storage, storageType, progress, cancellationToken);
 
             if (_diffSyncManager != null)
             {
@@ -105,6 +115,13 @@ public class Backup
 
             await _state.SaveStateAsync();
         }
+        catch (OperationCanceledException)
+        {
+            // Not a backup failure: the three-phase commit means HEAD has not advanced, so
+            // the snapshot simply did not happen. Must not be logged as an error or swallowed.
+            _logger.Log($"Backup of {sourceDirectory} cancelled by request.", LogLevel.Warning);
+            throw;
+        }
         catch (Exception ex)
         {
             _logger.Log($"Failed to backup directory: {ex.Message}", LogLevel.Error);
@@ -116,7 +133,12 @@ public class Backup
         }
     }
 
-    public async Task BackupFilesAsync(IEnumerable<string> filesToBackup, string baseDirectory, string? storageTypeOverride = null)
+    public async Task BackupFilesAsync(
+        IEnumerable<string> filesToBackup,
+        string baseDirectory,
+        string? storageTypeOverride = null,
+        IProgress<BackupProgress>? progress = null,
+        CancellationToken cancellationToken = default)
     {
         if (filesToBackup == null)
         {
@@ -159,7 +181,7 @@ public class Backup
             }
 
             var allFiles = GetFilesInDirectory(baseDirectory);
-            await CreateSnapshotBackupAsync(baseDirectory, allFiles, existingFilesToBackup, storage, storageType);
+            await CreateSnapshotBackupAsync(baseDirectory, allFiles, existingFilesToBackup, storage, storageType, progress, cancellationToken);
 
             foreach (var file in existingFilesToBackup)
             {
@@ -169,6 +191,11 @@ public class Backup
             _logger.Log("Specific file snapshot backup completed.", LogLevel.Info);
 
             await _state.SaveStateAsync();
+        }
+        catch (OperationCanceledException)
+        {
+            _logger.Log($"Backup of specific files from {baseDirectory} cancelled by request.", LogLevel.Warning);
+            throw;
         }
         catch (Exception ex)
         {
@@ -211,7 +238,14 @@ public class Backup
         return watchConfig?.StorageType ?? _config.GlobalStorageType;
     }
 
-    private async Task CreateSnapshotBackupAsync(string sourceDirectory, List<string> allFiles, List<string> changedFiles, IStorage storage, string storageType)
+    private async Task CreateSnapshotBackupAsync(
+        string sourceDirectory,
+        List<string> allFiles,
+        List<string> changedFiles,
+        IStorage storage,
+        string storageType,
+        IProgress<BackupProgress>? progress = null,
+        CancellationToken cancellationToken = default)
     {
         var chunkConfig = _config.ChunkDiffing ?? new ChunkDiffingConfig();
 
@@ -290,35 +324,102 @@ public class Backup
             }
 
             var manifestFiles = new List<SnapshotFileManifestEntry>();
-            var pendingChunkPayloads = new Dictionary<string, ChunkBuildPayload>(StringComparer.OrdinalIgnoreCase);
 
-            foreach (var absolutePath in allFiles
+            // Payloads upload as they are produced and are not retained, so peak memory does
+            // not scale with the size of the change set. Only the handled ids are kept, to
+            // skip chunks this snapshot already stored.
+            var uploadedChunkIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var uploadTelemetry = new ChunkUploadTelemetry();
+
+            var orderedFiles = allFiles
                 .Select(path => Path.GetFullPath(Environment.ExpandEnvironmentVariables(path)))
                 .Where(File.Exists)
-                .OrderBy(path => path, StringComparer.OrdinalIgnoreCase))
+                .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            var chunkingBytesTotal = orderedFiles.Sum(path =>
             {
+                try
+                {
+                    return new FileInfo(path).Length;
+                }
+                catch
+                {
+                    return 0L;
+                }
+            });
+
+            var filesProcessed = 0;
+            var bytesProcessed = 0L;
+
+            async Task UploadChunkAsync(ChunkBuildPayload chunkPayload, CancellationToken uploadToken)
+            {
+                if (!uploadedChunkIds.Add(chunkPayload.ChunkId))
+                {
+                    return;
+                }
+
+                await UploadChunkIfMissingAsync(
+                    storage,
+                    chunkPayload,
+                    chunkStorageNamespace,
+                    uploadTelemetry,
+                    uploadToken);
+
+                // Uploads interleave with chunking, so the byte totals are the running
+                // chunking totals, not a separate upload-only denominator.
+                progress?.Report(new BackupProgress(
+                    $"chunk {uploadedChunkIds.Count}",
+                    filesProcessed,
+                    orderedFiles.Count,
+                    bytesProcessed,
+                    chunkingBytesTotal,
+                    BackupPhase.Uploading));
+            }
+
+            foreach (var absolutePath in orderedFiles)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
                 var relativePath = Path.GetRelativePath(normalizedSourceDirectory, absolutePath)
                     .Replace(Path.DirectorySeparatorChar, '/');
+
+                progress?.Report(new BackupProgress(
+                    relativePath,
+                    filesProcessed,
+                    orderedFiles.Count,
+                    bytesProcessed,
+                    chunkingBytesTotal,
+                    BackupPhase.Chunking));
 
                 if (canReusePreviousManifestEntries
                     && !normalizedChangedFiles.Contains(absolutePath)
                     && previousFilesByPath.TryGetValue(relativePath, out var existingEntry))
                 {
                     manifestFiles.Add(existingEntry);
+                    filesProcessed++;
+                    bytesProcessed += existingEntry.SizeBytes;
                     continue;
                 }
 
-                var chunkBuild = await chunkingService.BuildFileManifestEntryAsync(absolutePath, normalizedSourceDirectory);
-                manifestFiles.Add(chunkBuild.FileEntry);
+                var chunkBuild = await chunkingService.BuildFileManifestEntryAsync(
+                    absolutePath,
+                    normalizedSourceDirectory,
+                    UploadChunkAsync,
+                    cancellationToken);
 
-                foreach (var chunkPayload in chunkBuild.ChunkPayloads)
-                {
-                    if (!pendingChunkPayloads.ContainsKey(chunkPayload.ChunkId))
-                    {
-                        pendingChunkPayloads[chunkPayload.ChunkId] = chunkPayload;
-                    }
-                }
+                manifestFiles.Add(chunkBuild.FileEntry);
+                filesProcessed++;
+                bytesProcessed += chunkBuild.FileEntry.SizeBytes;
             }
+
+            progress?.Report(new BackupProgress(
+                string.Empty,
+                filesProcessed,
+                orderedFiles.Count,
+                bytesProcessed,
+                chunkingBytesTotal,
+                BackupPhase.Chunking));
 
             var snapshotId = SnapshotStoragePaths.BuildSnapshotId();
             var manifest = new SnapshotManifest
@@ -338,7 +439,18 @@ public class Backup
 
             manifest.RootHash = SnapshotManifestHasher.ComputeRootHash(manifest);
 
-            var uploadTelemetry = await UploadMissingChunksAsync(storage, pendingChunkPayloads.Values, chunkStorageNamespace);
+            uploadTelemetry.CandidateChunks = uploadedChunkIds.Count;
+
+            // Every chunk is stored by this point. The snapshot commits in three phases —
+            // chunks, then the manifest, then HEAD — so cancelling before HEAD leaves HEAD on
+            // the previous snapshot and an interrupted backup is inert.
+            progress?.Report(new BackupProgress(
+                "manifest",
+                orderedFiles.Count,
+                orderedFiles.Count,
+                chunkingBytesTotal,
+                chunkingBytesTotal,
+                BackupPhase.Finalising));
 
             var manifestPath = SnapshotStoragePaths.GetManifestPath(normalizedSourceDirectory, snapshotId);
             await UploadManifestAsync(storage, manifestPath, manifest);
@@ -369,6 +481,10 @@ public class Backup
             await _retentionManager.ApplyGroupAsync(normalizedSourceDirectory);
             _logger.Log($"Snapshot backup completed: {manifestPath}", LogLevel.Info);
         }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
         catch (Exception ex)
         {
             _logger.Log($"Failed to create snapshot backup: {ex.Message}", LogLevel.Error);
@@ -376,42 +492,40 @@ public class Backup
         }
     }
 
-    private async Task<ChunkUploadTelemetry> UploadMissingChunksAsync(
+    /// <summary>
+    /// Uploads one chunk unless the provider already has it. Called as each chunk is produced,
+    /// so the payload can be released immediately afterwards.
+    /// </summary>
+    private async Task UploadChunkIfMissingAsync(
         IStorage storage,
-        IEnumerable<ChunkBuildPayload> chunkPayloads,
-        string? chunkStorageNamespace)
+        ChunkBuildPayload chunk,
+        string? chunkStorageNamespace,
+        ChunkUploadTelemetry telemetry,
+        CancellationToken cancellationToken = default)
     {
-        var payloadList = chunkPayloads.ToList();
-        var telemetry = new ChunkUploadTelemetry
+        cancellationToken.ThrowIfCancellationRequested();
+
+        var chunkPath = SnapshotStoragePaths.GetChunkPath(chunk.ChunkId, chunkStorageNamespace);
+        if (await storage.ExistsAsync(chunkPath))
         {
-            CandidateChunks = payloadList.Count
-        };
-
-        foreach (var chunk in payloadList)
-        {
-            var chunkPath = SnapshotStoragePaths.GetChunkPath(chunk.ChunkId, chunkStorageNamespace);
-            if (await storage.ExistsAsync(chunkPath))
-            {
-                telemetry.ReusedChunks++;
-                continue;
-            }
-
-            var tempChunkPath = Path.Combine(Path.GetTempPath(), $"restore_chunk_{Guid.NewGuid():N}.tmp");
-            await File.WriteAllBytesAsync(tempChunkPath, chunk.StoredPayload);
-
-            try
-            {
-                await storage.UploadAsync(tempChunkPath, chunkPath);
-                telemetry.UploadedChunks++;
-                _logger.Log($"Uploaded chunk {chunk.ChunkId} to {chunkPath}", LogLevel.Debug);
-            }
-            finally
-            {
-                TryDeleteTemporaryFile(tempChunkPath);
-            }
+            telemetry.ReusedChunks++;
+            return;
         }
 
-        return telemetry;
+        var tempChunkPath = Path.Combine(Path.GetTempPath(), $"restore_chunk_{Guid.NewGuid():N}.tmp");
+        await File.WriteAllBytesAsync(tempChunkPath, chunk.StoredPayload, cancellationToken);
+
+        try
+        {
+            await storage.UploadAsync(tempChunkPath, chunkPath);
+            telemetry.UploadedChunks++;
+            telemetry.UploadedStoredBytes += chunk.StoredPayload.Length;
+            _logger.Log($"Uploaded chunk {chunk.ChunkId} to {chunkPath}", LogLevel.Debug);
+        }
+        finally
+        {
+            TryDeleteTemporaryFile(tempChunkPath);
+        }
     }
 
     private void LogChunkReuseTelemetry(
@@ -428,8 +542,17 @@ public class Backup
             ? 0
             : (double)uploadTelemetry.ReusedChunks / uploadTelemetry.CandidateChunks;
 
+        // Stored size of each unique chunk this snapshot references, taken from the manifest
+        // so the figure is exact rather than an average-size estimate.
+        var referencedStoredBytes = manifest.Files
+            .SelectMany(file => file.Chunks)
+            .GroupBy(chunk => chunk.ChunkId, StringComparer.OrdinalIgnoreCase)
+            .Sum(group => (long)group.First().StoredSizeBytes);
+
+        var dedupSavedBytes = Math.Max(0, referencedStoredBytes - uploadTelemetry.UploadedStoredBytes);
+
         _logger.Log(
-            $"Chunk telemetry: group='{sourceDirectory}', snapshot='{manifest.SnapshotId}', fileCount={manifest.Files.Count}, chunkRefs={totalChunkReferences}, uniqueChunks={totalUniqueChunks}, uploadedChunks={uploadTelemetry.UploadedChunks}, reusedChunks={uniqueReusedChunks}, manifestReuseRatio={manifestReuseRatio:P2}, candidateChunks={uploadTelemetry.CandidateChunks}, storageHitChunks={uploadTelemetry.ReusedChunks}, uploadBypassRatio={uploadBypassRatio:P2}",
+            $"Chunk telemetry: group='{sourceDirectory}', snapshot='{manifest.SnapshotId}', fileCount={manifest.Files.Count}, chunkRefs={totalChunkReferences}, uniqueChunks={totalUniqueChunks}, uploadedChunks={uploadTelemetry.UploadedChunks}, reusedChunks={uniqueReusedChunks}, manifestReuseRatio={manifestReuseRatio:P2}, candidateChunks={uploadTelemetry.CandidateChunks}, storageHitChunks={uploadTelemetry.ReusedChunks}, uploadBypassRatio={uploadBypassRatio:P2}, referencedStoredBytes={referencedStoredBytes}, uploadedStoredBytes={uploadTelemetry.UploadedStoredBytes}, dedupSavedBytes={dedupSavedBytes}",
             LogLevel.Info);
 
         _state.RecordSnapshotBackupTelemetry(
@@ -439,7 +562,9 @@ public class Backup
             uploadedChunks: uploadTelemetry.UploadedChunks,
             uniqueReusedChunks: uniqueReusedChunks,
             storageHitChunks: uploadTelemetry.ReusedChunks,
-            candidateChunks: uploadTelemetry.CandidateChunks);
+            candidateChunks: uploadTelemetry.CandidateChunks,
+            referencedStoredBytes: referencedStoredBytes,
+            uploadedStoredBytes: uploadTelemetry.UploadedStoredBytes);
     }
 
     private async Task UploadManifestAsync(IStorage storage, string manifestPath, SnapshotManifest manifest)
@@ -596,17 +721,31 @@ public class Backup
 
     private static void TryDeleteTemporaryFile(string path)
     {
-        if (File.Exists(path))
+        // Runs in finally blocks around chunk, manifest and HEAD uploads: a transient lock
+        // must not mask the upload's own outcome, and a leftover temp file is inert.
+        try
         {
-            File.Delete(path);
+            if (File.Exists(path))
+            {
+                File.Delete(path);
+            }
+        }
+        catch (IOException)
+        {
+        }
+        catch (UnauthorizedAccessException)
+        {
         }
     }
 
     private sealed class ChunkUploadTelemetry
     {
-        public int CandidateChunks { get; init; }
+        public int CandidateChunks { get; set; }
         public int UploadedChunks { get; set; }
         public int ReusedChunks { get; set; }
+
+        /// <summary>Stored bytes actually transferred to the provider.</summary>
+        public long UploadedStoredBytes { get; set; }
     }
 
     private sealed class SnapshotHeadReference

@@ -4,7 +4,7 @@ This section documents the technical architecture of ReStore, a Windows backup a
 
 ## Overview
 
-ReStore consists of two .NET 9.0 projects:
+ReStore consists of two .NET 10.0 projects:
 
 - **ReStore** (GUI): Modern WPF application with dashboard, backup browser, and settings management
 - **ReStore.Core** (Library/CLI): Core backup functionality with multiple storage backends

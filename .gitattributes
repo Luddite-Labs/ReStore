@@ -1,0 +1,42 @@
+# Normalise line endings.
+
+* text=auto
+
+# Source and config: stored LF, checked out CRLF on Windows.
+*.cs        text eol=crlf
+*.csproj    text eol=crlf
+*.sln       text eol=crlf
+*.xaml      text eol=crlf
+*.json      text eol=crlf
+*.manifest  text eol=crlf
+*.appxmanifest text eol=crlf
+*.editorconfig text eol=crlf
+
+# Windows-only scripts must keep CRLF; PowerShell and cmd can misbehave with LF.
+*.ps1       text eol=crlf
+*.psm1      text eol=crlf
+*.cmd       text eol=crlf
+*.bat       text eol=crlf
+
+# Shell scripts must keep LF regardless of platform.
+*.sh        text eol=lf
+
+# Docs: LF everywhere.
+*.md        text eol=lf
+*.yml       text eol=lf
+*.yaml      text eol=lf
+
+# Binary assets - never touch these.
+*.png       binary
+*.jpg       binary
+*.jpeg      binary
+*.gif       binary
+*.ico       binary
+*.pfx       binary
+*.snk       binary
+*.dll       binary
+*.exe       binary
+*.pdb       binary
+*.zip       binary
+*.msix      binary
+*.appx      binary

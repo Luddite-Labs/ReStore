@@ -9,15 +9,13 @@ public class FileSelectionService(ILogger logger, IConfigManager configManager)
 
     public bool ShouldExcludeFile(string filePath)
     {
-        filePath = filePath.Replace('/', '\\');
+        filePath = NormalizePath(filePath);
 
-        // Check exclude paths from config
         if (_configManager.ExcludedPaths.Any(p => IsPathWithinRoot(filePath, NormalizePath(p))))
         {
             return true;
         }
 
-        // Check system or hidden attributes
         try
         {
             var fileInfo = new FileInfo(filePath);
@@ -29,7 +27,6 @@ public class FileSelectionService(ILogger logger, IConfigManager configManager)
                     return true;
                 }
 
-                // Check file size
                 long maxFileSizeBytes = _configManager.MaxFileSizeMB * 1024 * 1024L;
                 if (fileInfo.Length > maxFileSizeBytes)
                 {
@@ -56,7 +53,6 @@ public class FileSelectionService(ILogger logger, IConfigManager configManager)
             return true;
         }
 
-        // Check exclude patterns
         string fileName = Path.GetFileName(filePath);
         foreach (var pattern in _configManager.ExcludedPatterns)
         {
@@ -79,7 +75,6 @@ public class FileSelectionService(ILogger logger, IConfigManager configManager)
             {
                 if (File.Exists(includePath))
                 {
-                    // If it's a single file
                     if (!ShouldExcludeFile(includePath))
                     {
                         filesToBackup.Add(includePath);
@@ -184,7 +179,11 @@ public class FileSelectionService(ILogger logger, IConfigManager configManager)
 
     private static string NormalizePath(string path)
     {
-        return Path.GetFullPath(Environment.ExpandEnvironmentVariables(path))
+        var normalizedSeparators = path
+            .Replace('\\', Path.DirectorySeparatorChar)
+            .Replace('/', Path.DirectorySeparatorChar);
+
+        return Path.GetFullPath(Environment.ExpandEnvironmentVariables(normalizedSeparators))
             .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
     }
 

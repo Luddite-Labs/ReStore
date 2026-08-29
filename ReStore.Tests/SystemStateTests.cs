@@ -60,6 +60,27 @@ public class SystemStateTests : IDisposable
         changedFiles.Should().Contain(filePath);
     }
 
+    [Theory]
+    [InlineData(BackupType.Incremental)]
+    [InlineData(BackupType.ChunkSnapshot)]
+    public async Task GetChangedFiles_ShouldReturnSameSizeFile_WhenContentChangesAndTimestampIsPreserved(BackupType backupType)
+    {
+        var state = new SystemState(_loggerMock.Object);
+        state.SetStateFilePath(_stateFile);
+
+        var filePath = Path.Combine(_testDir, "same-size.txt");
+        await File.WriteAllTextAsync(filePath, "content1");
+        await state.AddOrUpdateFileMetadataAsync(filePath);
+
+        var storedTimestamp = state.FileMetadata[filePath].LastModified;
+        await File.WriteAllTextAsync(filePath, "content2");
+        File.SetLastWriteTimeUtc(filePath, storedTimestamp);
+
+        var changedFiles = state.GetChangedFiles([filePath], backupType);
+
+        changedFiles.Should().Contain(filePath);
+    }
+
     [Fact]
     public async Task SaveAndLoadState_ShouldPersistData()
     {

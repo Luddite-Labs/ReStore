@@ -9,13 +9,11 @@ public class FileDiffSyncManager(ILogger logger, SystemState systemState, Backup
     private readonly SystemState _systemState = systemState;
     private readonly BackupConfigurationManager _backupConfigManager = backupConfigManager;
 
-    // Implement GetFilesToBackup using SystemState
     public List<string> GetFilesToBackup(List<string> allFiles, string? group = null)
     {
         var backupType = _backupConfigManager.Configuration.Type;
         _logger.Log($"Determining files to backup based on type: {backupType}", LogLevel.Debug);
 
-        // Delegate the logic to SystemState
         var filesToBackup = _systemState.GetChangedFiles(allFiles, backupType, group)
             ?? _systemState.GetChangedFiles(allFiles, backupType)
             ?? [];
@@ -24,7 +22,10 @@ public class FileDiffSyncManager(ILogger logger, SystemState systemState, Backup
         return filesToBackup;
     }
 
-    // Implement UpdateFileMetadataAsync using SystemState
+    /// <summary>
+    /// Records the post-backup state of each file. The caller saves state afterwards, so a
+    /// partial run does not persist metadata claiming files were captured.
+    /// </summary>
     public async Task UpdateFileMetadataAsync(List<string> backedUpFiles)
     {
         _logger.Log($"Updating metadata for {backedUpFiles.Count} successfully backed up files.", LogLevel.Debug);
@@ -32,7 +33,6 @@ public class FileDiffSyncManager(ILogger logger, SystemState systemState, Backup
         {
             try
             {
-                // Ensure file still exists before updating metadata
                 if (File.Exists(filePath))
                 {
                     await _systemState.AddOrUpdateFileMetadataAsync(filePath);
@@ -44,11 +44,10 @@ public class FileDiffSyncManager(ILogger logger, SystemState systemState, Backup
             }
             catch (Exception ex)
             {
+                // One unreadable file must not abandon the rest of the batch.
                 _logger.Log($"Error updating metadata for file {filePath}: {ex.Message}", LogLevel.Warning);
-                // Continue updating metadata for other files
             }
         }
         _logger.Log("Metadata update complete.", LogLevel.Debug);
-        // State saving should happen after metadata updates in the Backup class
     }
 }

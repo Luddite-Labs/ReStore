@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Diagnostics;
@@ -18,11 +18,11 @@ namespace ReStore.Views.Pages
 {
     public class SystemBackupItem
     {
-        private static string? _storageBasePath;
-        
         public string Type { get; set; } = "";
         public string Path { get; set; } = "";
         public DateTime Timestamp { get; set; }
+        public string StorageType { get; set; } = "";
+        public string? StorageBasePath { get; set; }
         public string TypeLabel => Type switch
         {
             "system_programs" => "Installed Programs",
@@ -49,38 +49,32 @@ namespace ReStore.Views.Pages
         {
             get
             {
-                if (string.IsNullOrEmpty(_storageBasePath) || string.IsNullOrEmpty(Path))
+                if (string.IsNullOrEmpty(StorageBasePath) || string.IsNullOrEmpty(Path))
                     return Path;
                 
                 if (Path.StartsWith("./") || Path.StartsWith(".\\"))
                 {
                     var relativePath = Path.Substring(2);
-                    return System.IO.Path.Combine(_storageBasePath, relativePath);
+                    return System.IO.Path.Combine(StorageBasePath, relativePath);
                 }
                 
-                return System.IO.Path.Combine(_storageBasePath, Path);
+                return System.IO.Path.Combine(StorageBasePath, Path);
             }
-        }
-        
-        public static void SetStorageBasePath(string? basePath)
-        {
-            _storageBasePath = basePath;
         }
     }
 
     public partial class SystemRestorePage : Page
     {
-        private readonly ConfigManager _configManager;
-        private readonly Logger _logger = new();
+        private readonly Logger _logger = AppServices.Logger;
+        private ConfigManager _configManager = null!;
         private SystemState? _state;
-        private IStorage? _storage;
         private readonly ObservableCollection<SystemBackupItem> _systemBackups = new();
         private List<SystemBackupItem> _allBackups = new();
+        private bool _initialized;
 
         public SystemRestorePage()
         {
             InitializeComponent();
-            _configManager = new ConfigManager(_logger);
 
             SystemBackupsList.ItemsSource = _systemBackups;
 
@@ -91,26 +85,14 @@ namespace ReStore.Views.Pages
             BackupFullSystemBtn.Click += async (_, __) => await BackupFullSystemAsync();
             OpenBackupFolderBtn.Click += (_, __) => OpenBackupFolder();
             FilterTypeCombo.SelectionChanged += (_, __) => ApplyFilters();
-
-            _ = InitializeAsync();
         }
 
         private async Task InitializeAsync()
         {
             try
             {
-                await _configManager.LoadAsync();
-                _state = new SystemState(_logger);
-                await _state.LoadStateAsync();
-
-                var appSettings = AppSettings.Load();
-                var remote = string.IsNullOrWhiteSpace(appSettings.DefaultStorage) ? "local" : appSettings.DefaultStorage;
-                _storage = await _configManager.CreateStorageAsync(remote);
-
-                if (_configManager.StorageSources.TryGetValue(remote, out var storageConfig))
-                {
-                    SystemBackupItem.SetStorageBasePath(storageConfig.Path);
-                }
+                _configManager = await AppServices.GetConfigManagerAsync();
+                _state = await AppServices.GetSystemStateAsync();
 
                 await LoadSystemBackupsAsync();
             }
@@ -120,7 +102,7 @@ namespace ReStore.Views.Pages
             }
         }
 
-        private void Page_Loaded(object sender, RoutedEventArgs e)
+        private async void Page_Loaded(object sender, RoutedEventArgs e)
         {
             var storyboard = new System.Windows.Media.Animation.Storyboard();
             
@@ -135,11 +117,12 @@ namespace ReStore.Views.Pages
             System.Windows.Media.Animation.Storyboard.SetTargetProperty(fadeIn, new PropertyPath(UIElement.OpacityProperty));
             storyboard.Children.Add(fadeIn);
             storyboard.Begin(this);
-        }
 
-        private void Page_Unloaded(object sender, RoutedEventArgs e)
-        {
-            _storage?.Dispose();
+            if (!_initialized)
+            {
+                _initialized = true;
+                await InitializeAsync();
+            }
         }
 
         private async Task LoadSystemBackupsAsync()
@@ -150,42 +133,13 @@ namespace ReStore.Views.Pages
             {
                 var items = new List<SystemBackupItem>();
 
-                if (_state.BackupHistory.ContainsKey("system_programs"))
+                // Snapshot once under the state lock; the scheduler can append system backups
+                // on its own thread while this page enumerates.
+                foreach (var group in new[] { "system_programs", "system_environment", "system_settings" })
                 {
-                    foreach (var backup in _state.BackupHistory["system_programs"])
+                    foreach (var backup in _state.GetBackupsForGroup(group))
                     {
-                        items.Add(new SystemBackupItem
-                        {
-                            Type = "system_programs",
-                            Path = backup.Path,
-                            Timestamp = backup.Timestamp
-                        });
-                    }
-                }
-
-                if (_state.BackupHistory.ContainsKey("system_environment"))
-                {
-                    foreach (var backup in _state.BackupHistory["system_environment"])
-                    {
-                        items.Add(new SystemBackupItem
-                        {
-                            Type = "system_environment",
-                            Path = backup.Path,
-                            Timestamp = backup.Timestamp
-                        });
-                    }
-                }
-
-                if (_state.BackupHistory.ContainsKey("system_settings"))
-                {
-                    foreach (var backup in _state.BackupHistory["system_settings"])
-                    {
-                        items.Add(new SystemBackupItem
-                        {
-                            Type = "system_settings",
-                            Path = backup.Path,
-                            Timestamp = backup.Timestamp
-                        });
+                        items.Add(CreateBackupItem(group, backup));
                     }
                 }
 
@@ -196,6 +150,60 @@ namespace ReStore.Views.Pages
                     UpdateStatistics();
                 });
             });
+        }
+
+        private SystemBackupItem CreateBackupItem(string type, BackupInfo backup)
+        {
+            var storageType = ResolveStorageType(type, backup.StorageType);
+
+            return new SystemBackupItem
+            {
+                Type = type,
+                Path = backup.Path,
+                Timestamp = backup.Timestamp,
+                StorageType = storageType,
+                StorageBasePath = GetStorageBasePath(storageType)
+            };
+        }
+
+        private string ResolveStorageType(SystemBackupItem backup)
+        {
+            return ResolveStorageType(backup.Type, backup.StorageType);
+        }
+
+        private string ResolveStorageType(string backupType, string? recordedStorageType)
+        {
+            if (!string.IsNullOrWhiteSpace(recordedStorageType))
+            {
+                return recordedStorageType;
+            }
+
+            return backupType switch
+            {
+                "system_programs" => _configManager.SystemBackup.ProgramsStorageType
+                    ?? _configManager.SystemBackup.StorageType
+                    ?? _configManager.GlobalStorageType,
+                "system_environment" => _configManager.SystemBackup.EnvironmentStorageType
+                    ?? _configManager.SystemBackup.StorageType
+                    ?? _configManager.GlobalStorageType,
+                "system_settings" => _configManager.SystemBackup.SettingsStorageType
+                    ?? _configManager.SystemBackup.StorageType
+                    ?? _configManager.GlobalStorageType,
+                _ => _configManager.GlobalStorageType
+            };
+        }
+
+        private string? GetStorageBasePath(string storageType)
+        {
+            return _configManager.StorageSources.TryGetValue(storageType, out var storageConfig)
+                ? storageConfig.Path
+                : null;
+        }
+
+        private async Task<IStorage> CreateStorageForBackupAsync(SystemBackupItem backup)
+        {
+            var storageType = ResolveStorageType(backup);
+            return await _configManager.CreateStorageAsync(storageType);
         }
 
         private void ApplyFilters()
@@ -336,7 +344,7 @@ namespace ReStore.Views.Pages
                     }
 
                     var passwordProvider = App.GlobalPasswordProvider ?? new Services.GuiPasswordProvider();
-                    passwordProvider.SetEncryptionMode(true); // For encryption during backup
+                    passwordProvider.SetEncryptionMode(true);
                     var systemBackup = new SystemBackupManager(_logger, _configManager, _state, passwordProvider);
                     await systemBackup.BackupInstalledProgramsAsync();
 
@@ -512,12 +520,12 @@ namespace ReStore.Views.Pages
             }
         }
 
-        private Task RestoreSystemBackupAsync(SystemBackupItem backup)
+        private async Task RestoreSystemBackupAsync(SystemBackupItem backup)
         {
             if (!OperatingSystem.IsWindows())
             {
                 MessageBox.Show("System restore is only available on Windows.", "System Restore", MessageBoxButton.OK, MessageBoxImage.Warning);
-                return Task.CompletedTask;
+                return;
             }
 
             try
@@ -538,15 +546,16 @@ namespace ReStore.Views.Pages
 
                 if (result == MessageBoxResult.Yes)
                 {
-                    if (_state == null || _storage == null)
+                    if (_state == null)
                     {
                         MessageBox.Show("System not initialized properly.", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
-                        return Task.CompletedTask;
+                        return;
                     }
 
                     var passwordProvider = App.GlobalPasswordProvider ?? new Services.GuiPasswordProvider();
                     passwordProvider.SetEncryptionMode(false);
-                    var progressWindow = new Windows.RestoreProgressWindow(_storage, _state, backup.Type, backup.Path, passwordProvider);
+                    using var storage = await CreateStorageForBackupAsync(backup);
+                    var progressWindow = new Windows.RestoreProgressWindow(storage, _state, backup.Type, backup.Path, passwordProvider);
                     progressWindow.Owner = Window.GetWindow(this);
                     progressWindow.ShowDialog();
                 }
@@ -555,8 +564,6 @@ namespace ReStore.Views.Pages
             {
                 MessageBox.Show($"System restore failed: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
             }
-            
-            return Task.CompletedTask;
         }
 
         private async void DeleteBackup_Click(object sender, RoutedEventArgs e)
@@ -587,36 +594,28 @@ namespace ReStore.Views.Pages
             {
                 try
                 {
-                    if (_storage != null)
+                    using var storage = await CreateStorageForBackupAsync(backup);
+                    await storage.DeleteAsync(backup.Path);
+
+                    // If encrypted, also delete the metadata file
+                    if (backup.Path.EndsWith(".enc", StringComparison.OrdinalIgnoreCase))
                     {
-                        await _storage.DeleteAsync(backup.Path);
-                        
-                        // If encrypted, also delete the metadata file
-                        if (backup.Path.EndsWith(".enc", StringComparison.OrdinalIgnoreCase))
+                        var metadataPath = backup.Path + ".meta";
+                        try
                         {
-                            var metadataPath = backup.Path + ".meta";
-                            try
-                            {
-                                await _storage.DeleteAsync(metadataPath);
-                            }
-                            catch (Exception metaEx)
-                            {
-                                _logger.Log($"Warning: Failed to delete metadata file: {metaEx.Message}", LogLevel.Warning);
-                            }
+                            await storage.DeleteAsync(metadataPath);
+                        }
+                        catch (Exception metaEx)
+                        {
+                            _logger.Log($"Warning: Failed to delete metadata file: {metaEx.Message}", LogLevel.Warning);
                         }
                     }
 
-                    if (_state != null && _state.BackupHistory.ContainsKey(backup.Type))
+                    if (_state != null)
                     {
-                        var toRemove = _state.BackupHistory[backup.Type]
-                            .Where(b => b.Path == backup.Path)
-                            .ToList();
-                        
-                        foreach (var b in toRemove)
-                        {
-                            _state.BackupHistory[backup.Type].Remove(b);
-                        }
-
+                        // Locked API rather than mutating BackupHistory directly: this also
+                        // prunes the verification-rotation bookkeeping.
+                        _state.RemoveBackupsFromGroup(backup.Type, [backup.Path]);
                         await _state.SaveStateAsync();
                     }
 
@@ -650,6 +649,7 @@ namespace ReStore.Views.Pages
 
                 var details = $"Type: {typeLabel}\n\n" +
                              $"Created: {backup.Timestamp:MMM dd, yyyy HH:mm:ss}\n\n" +
+                             $"Storage: {backup.StorageType}\n\n" +
                              $"Path: {backup.DisplayPath}\n\n" +
                              $"Description: This backup contains {description}";
 

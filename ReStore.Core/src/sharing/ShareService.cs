@@ -17,7 +17,6 @@ public class ShareService(IConfigManager configManager, ILogger logger)
             throw new FileNotFoundException($"File not found: {localFilePath}");
         }
 
-        // Create storage instance
         using var storage = await _configManager.CreateStorageAsync(storageType);
 
         if (!storage.SupportsSharing)
@@ -25,13 +24,11 @@ public class ShareService(IConfigManager configManager, ILogger logger)
             throw new NotSupportedException($"Storage provider '{storageType}' does not support file sharing.");
         }
 
-        // Define remote path in a "shared" folder
         string fileName = Path.GetFileName(localFilePath);
         string remotePath = $"shared/{Guid.NewGuid()}/{fileName}";
 
         _logger.Log($"Uploading {fileName} to {storageType} for sharing...");
 
-        // Upload unencrypted
         await storage.UploadAsync(localFilePath, remotePath);
 
         try

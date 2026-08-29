@@ -33,7 +33,6 @@ public class GcpStorage(ILogger logger) : StorageBase(logger)
                 _storageClient = await StorageClient.CreateAsync();
             }
 
-            // Verify bucket exists
             try 
             {
                 await _storageClient.GetBucketAsync(_bucketName);

@@ -78,8 +78,11 @@ public class EnvironmentVariablesManagerTests : IDisposable
     {
         var variableName = "RESTORE_TEST_VAR_" + Guid.NewGuid().ToString("N");
         var expectedValue = "restored-value";
+        var target = OperatingSystem.IsWindows()
+            ? EnvironmentVariableTarget.User
+            : EnvironmentVariableTarget.Process;
 
-        Environment.SetEnvironmentVariable(variableName, null, EnvironmentVariableTarget.User);
+        Environment.SetEnvironmentVariable(variableName, null, target);
 
         try
         {
@@ -91,7 +94,7 @@ public class EnvironmentVariablesManagerTests : IDisposable
                     {
                         Name = variableName,
                         Value = expectedValue,
-                        Target = EnvironmentVariableTarget.User
+                        Target = target
                     }
                 }
             };
@@ -101,12 +104,12 @@ public class EnvironmentVariablesManagerTests : IDisposable
 
             await _manager.RestoreEnvironmentVariablesAsync(jsonPath);
 
-            var restoredValue = Environment.GetEnvironmentVariable(variableName, EnvironmentVariableTarget.User);
+            var restoredValue = Environment.GetEnvironmentVariable(variableName, target);
             restoredValue.Should().Be(expectedValue);
         }
         finally
         {
-            Environment.SetEnvironmentVariable(variableName, null, EnvironmentVariableTarget.User);
+            Environment.SetEnvironmentVariable(variableName, null, target);
         }
     }
 

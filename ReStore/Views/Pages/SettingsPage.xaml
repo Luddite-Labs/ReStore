@@ -1,7 +1,8 @@
 <Page x:Class="ReStore.Views.Pages.SettingsPage"
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-    xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml" Background="Transparent" TextOptions.TextFormattingMode="Display" TextOptions.TextRenderingMode="ClearType">
+    xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
+    xmlns:behaviors="clr-namespace:ReStore.Behaviors" Background="Transparent" TextOptions.TextFormattingMode="Display" TextOptions.TextRenderingMode="ClearType">
     <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
         <Grid Margin="20">
             <Grid.RowDefinitions>
@@ -27,14 +28,14 @@
                             </StackPanel>
                         </Border>
                     </Expander.Header>
-                    <Border Padding="20" Background="{DynamicResource CardBackgroundFillColorDefaultBrush}" CornerRadius="8" Effect="{StaticResource CardShadow}" Margin="0,8,0,0">
+                    <Border Padding="20" Background="{DynamicResource CardBackgroundFillColorDefaultBrush}" CornerRadius="8" Effect="{StaticResource CardShadow}" RenderOptions.ClearTypeHint="Enabled" Margin="0,8,0,0">
                         <StackPanel Orientation="Vertical">
                             <Grid Margin="0,0,0,12">
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="140"/>
                                     <ColumnDefinition Width="*"/>
                                 </Grid.ColumnDefinitions>
-                                <TextBlock Text="Default storage" VerticalAlignment="Center" FontSize="14" Foreground="{DynamicResource TextFillColorPrimaryBrush}"/>
+                                <TextBlock Text="Default backup storage" VerticalAlignment="Center" FontSize="14" Foreground="{DynamicResource TextFillColorPrimaryBrush}"/>
                                 <ComboBox x:Name="StorageCombo" Grid.Column="1" MinWidth="300" HorizontalAlignment="Left">
                                     <ComboBox.ItemTemplate>
                                         <DataTemplate>
@@ -335,7 +336,7 @@
                             </StackPanel>
                         </Border>
                     </Expander.Header>
-                    <Border Padding="20" Background="{DynamicResource CardBackgroundFillColorDefaultBrush}" CornerRadius="8" Effect="{StaticResource CardShadow}" Margin="0,8,0,0">
+                    <Border Padding="20" Background="{DynamicResource CardBackgroundFillColorDefaultBrush}" CornerRadius="8" Effect="{StaticResource CardShadow}" RenderOptions.ClearTypeHint="Enabled" Margin="0,8,0,0">
                         <StackPanel Orientation="Vertical">
                             <TextBlock Text="Configure directories to monitor and their backup storage destinations." Margin="0,0,0,12" TextWrapping="Wrap" Foreground="{DynamicResource TextFillColorSecondaryBrush}" FontSize="12"/>
 
@@ -354,7 +355,7 @@
                             </Border>
 
                             <Border Background="{DynamicResource CardBackgroundFillColorSecondaryBrush}" CornerRadius="6" Padding="12" MaxHeight="300" Margin="0,0,0,12">
-                                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                                <ScrollViewer VerticalScrollBarVisibility="Auto" behaviors:NestedScrollBehavior.CooperativeScrolling="True">
                                     <ItemsControl x:Name="WatchDirectoriesList" Padding="0,0,8,0">
                                         <ItemsControl.ItemTemplate>
                                             <DataTemplate>
@@ -421,7 +422,7 @@
                             </StackPanel>
                         </Border>
                     </Expander.Header>
-                    <Border Padding="20" Background="{DynamicResource CardBackgroundFillColorDefaultBrush}" CornerRadius="8" Effect="{StaticResource CardShadow}" Margin="0,8,0,0">
+                    <Border Padding="20" Background="{DynamicResource CardBackgroundFillColorDefaultBrush}" CornerRadius="8" Effect="{StaticResource CardShadow}" RenderOptions.ClearTypeHint="Enabled" Margin="0,8,0,0">
                         <StackPanel Orientation="Vertical">
 
                             <Grid Margin="0,0,0,12">
@@ -464,8 +465,8 @@
 
                             <Rectangle Height="1" Fill="{DynamicResource DividerStrokeColorDefaultBrush}" Opacity="0.3" Margin="0,8,0,12"/>
 
-                            <TextBlock Text="Pruning" FontSize="14" FontWeight="SemiBold" Foreground="{DynamicResource TextFillColorPrimaryBrush}" Margin="0,0,0,8"/>
-                            <TextBlock Text="Automatically deletes older backups. The newest backup is always kept." FontSize="11" Foreground="{DynamicResource TextFillColorSecondaryBrush}" Margin="0,0,0,12"/>
+                            <TextBlock Text="Retention" FontSize="14" FontWeight="SemiBold" Foreground="{DynamicResource TextFillColorPrimaryBrush}" Margin="0,0,0,8"/>
+                            <TextBlock Text="Limits how many backups are kept. Anything outside the limits below is deleted; the newest backup is always kept." FontSize="11" Foreground="{DynamicResource TextFillColorSecondaryBrush}" Margin="0,0,0,12"/>
 
                             <Grid Margin="0,0,0,12">
                                 <Grid.ColumnDefinitions>
@@ -478,7 +479,7 @@
                                     <RowDefinition Height="Auto"/>
                                 </Grid.RowDefinitions>
 
-                                <TextBlock Grid.Row="0" Text="Enable Pruning" VerticalAlignment="Center" FontSize="14" Foreground="{DynamicResource TextFillColorPrimaryBrush}" Margin="0,0,0,12"/>
+                                <TextBlock Grid.Row="0" Text="Enable Retention" VerticalAlignment="Center" FontSize="14" Foreground="{DynamicResource TextFillColorPrimaryBrush}" Margin="0,0,0,12"/>
                                 <CheckBox x:Name="RetentionEnabledCheckBox" Grid.Row="0" Grid.Column="1" Margin="0,0,0,12"/>
 
                                 <TextBlock Grid.Row="1" Text="Keep Last" VerticalAlignment="Center" FontSize="14" Foreground="{DynamicResource TextFillColorPrimaryBrush}" Margin="0,0,0,12"/>
@@ -514,7 +515,7 @@
                             </StackPanel>
                         </Border>
                     </Expander.Header>
-                    <Border Padding="20" Background="{DynamicResource CardBackgroundFillColorDefaultBrush}" CornerRadius="8" Effect="{StaticResource CardShadow}" Margin="0,8,0,0">
+                    <Border Padding="20" Background="{DynamicResource CardBackgroundFillColorDefaultBrush}" CornerRadius="8" Effect="{StaticResource CardShadow}" RenderOptions.ClearTypeHint="Enabled" Margin="0,8,0,0">
                         <StackPanel Orientation="Vertical">
                             <TextBlock Text="Configure backup encryption to secure your data with AES-256 encryption." Margin="0,0,0,16" TextWrapping="Wrap" Foreground="{DynamicResource TextFillColorSecondaryBrush}" FontSize="11"/>
 
@@ -578,9 +579,9 @@
                             </StackPanel>
                         </Border>
                     </Expander.Header>
-                    <Border Padding="20" Background="{DynamicResource CardBackgroundFillColorDefaultBrush}" CornerRadius="8" Effect="{StaticResource CardShadow}" Margin="0,8,0,0">
+                    <Border Padding="20" Background="{DynamicResource CardBackgroundFillColorDefaultBrush}" CornerRadius="8" Effect="{StaticResource CardShadow}" RenderOptions.ClearTypeHint="Enabled" Margin="0,8,0,0">
                         <StackPanel Orientation="Vertical">
-                            <TextBlock Text="Configure automatic backup of system state (installed programs and environment variables)" Margin="0,0,0,16" TextWrapping="Wrap" Foreground="{DynamicResource TextFillColorSecondaryBrush}" FontSize="11"/>
+                            <TextBlock Text="Configure automatic backup of system state (installed programs, environment variables and Windows settings)" Margin="0,0,0,16" TextWrapping="Wrap" Foreground="{DynamicResource TextFillColorSecondaryBrush}" FontSize="11"/>
 
                             <Grid Margin="0,0,0,12">
                                 <Grid.ColumnDefinitions>
@@ -588,6 +589,7 @@
                                     <ColumnDefinition Width="*"/>
                                 </Grid.ColumnDefinitions>
                                 <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto"/>
                                     <RowDefinition Height="Auto"/>
                                     <RowDefinition Height="Auto"/>
                                     <RowDefinition Height="Auto"/>
@@ -603,8 +605,11 @@
                                 <TextBlock Grid.Row="2" Text="Include Environment Variables" VerticalAlignment="Center" FontSize="14" Foreground="{DynamicResource TextFillColorPrimaryBrush}" Margin="0,0,0,12"/>
                                 <CheckBox x:Name="SystemBackupIncludeEnvCheckBox" Grid.Row="2" Grid.Column="1" Margin="0,0,0,12"/>
 
-                                <TextBlock Grid.Row="3" Text="System Backup Interval" VerticalAlignment="Center" FontSize="14" Foreground="{DynamicResource TextFillColorPrimaryBrush}" Margin="0,0,0,12"/>
-                                <StackPanel Grid.Row="3" Grid.Column="1" Orientation="Horizontal" Margin="0,0,0,12">
+                                <TextBlock Grid.Row="3" Text="Include Windows Settings" VerticalAlignment="Center" FontSize="14" Foreground="{DynamicResource TextFillColorPrimaryBrush}" Margin="0,0,0,12"/>
+                                <CheckBox x:Name="SystemBackupIncludeSettingsCheckBox" Grid.Row="3" Grid.Column="1" Margin="0,0,0,12"/>
+
+                                <TextBlock Grid.Row="4" Text="System Backup Interval" VerticalAlignment="Center" FontSize="14" Foreground="{DynamicResource TextFillColorPrimaryBrush}" Margin="0,0,0,12"/>
+                                <StackPanel Grid.Row="4" Grid.Column="1" Orientation="Horizontal" Margin="0,0,0,12">
                                     <TextBox x:Name="SystemBackupIntervalHoursBox" Width="60" HorizontalAlignment="Left"/>
                                     <TextBlock Text="hours" VerticalAlignment="Center" Margin="8,0,0,0" Foreground="{DynamicResource TextFillColorSecondaryBrush}"/>
                                 </StackPanel>
@@ -614,7 +619,7 @@
                             <TextBlock Text="Patterns to exclude certain system programs from backup (e.g., Microsoft Visual C++, KB[0-9]+)" Margin="0,0,0,8" TextWrapping="Wrap" Foreground="{DynamicResource TextFillColorSecondaryBrush}" FontSize="11"/>
 
                             <Border Background="{DynamicResource CardBackgroundFillColorSecondaryBrush}" CornerRadius="6" Padding="12" MaxHeight="150" Margin="0,0,0,12">
-                                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                                <ScrollViewer VerticalScrollBarVisibility="Auto" behaviors:NestedScrollBehavior.CooperativeScrolling="True">
                                     <ItemsControl x:Name="ExcludeSystemProgramsList" Padding="0,0,8,0">
                                         <ItemsControl.ItemTemplate>
                                             <DataTemplate>
@@ -654,14 +659,14 @@
                             </StackPanel>
                         </Border>
                     </Expander.Header>
-                    <Border Padding="20" Background="{DynamicResource CardBackgroundFillColorDefaultBrush}" CornerRadius="8" Effect="{StaticResource CardShadow}" Margin="0,8,0,0">
+                    <Border Padding="20" Background="{DynamicResource CardBackgroundFillColorDefaultBrush}" CornerRadius="8" Effect="{StaticResource CardShadow}" RenderOptions.ClearTypeHint="Enabled" Margin="0,8,0,0">
                         <StackPanel Orientation="Vertical">
 
                             <TextBlock Text="Excluded File Patterns" FontSize="13" FontWeight="Medium" Foreground="{DynamicResource TextFillColorPrimaryBrush}" Margin="0,0,0,8"/>
                             <TextBlock Text="File patterns to exclude from backups (e.g., *.tmp, *.log)" Margin="0,0,0,8" TextWrapping="Wrap" Foreground="{DynamicResource TextFillColorSecondaryBrush}" FontSize="11"/>
 
                             <Border Background="{DynamicResource CardBackgroundFillColorSecondaryBrush}" CornerRadius="6" Padding="12" MaxHeight="150" Margin="0,0,0,12">
-                                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                                <ScrollViewer VerticalScrollBarVisibility="Auto" behaviors:NestedScrollBehavior.CooperativeScrolling="True">
                                     <ItemsControl x:Name="ExcludedPatternsList" Padding="0,0,8,0">
                                         <ItemsControl.ItemTemplate>
                                             <DataTemplate>
@@ -690,7 +695,7 @@
                             <TextBlock Text="Full paths to exclude from backups (e.g., C:\Temp)" Margin="0,0,0,8" TextWrapping="Wrap" Foreground="{DynamicResource TextFillColorSecondaryBrush}" FontSize="11"/>
 
                             <Border Background="{DynamicResource CardBackgroundFillColorSecondaryBrush}" CornerRadius="6" Padding="12" MaxHeight="150" Margin="0,0,0,12">
-                                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                                <ScrollViewer VerticalScrollBarVisibility="Auto" behaviors:NestedScrollBehavior.CooperativeScrolling="True">
                                     <ItemsControl x:Name="ExcludedPathsList" Padding="0,0,8,0">
                                         <ItemsControl.ItemTemplate>
                                             <DataTemplate>
@@ -727,7 +732,7 @@
                             </StackPanel>
                         </Border>
                     </Expander.Header>
-                    <Border Padding="20" Background="{DynamicResource CardBackgroundFillColorDefaultBrush}" CornerRadius="8" Effect="{StaticResource CardShadow}" Margin="0,8,0,0">
+                    <Border Padding="20" Background="{DynamicResource CardBackgroundFillColorDefaultBrush}" CornerRadius="8" Effect="{StaticResource CardShadow}" RenderOptions.ClearTypeHint="Enabled" Margin="0,8,0,0">
                         <StackPanel Orientation="Vertical">
                             <CheckBox x:Name="RunAtStartupCheckBox" Content="Run at Windows startup" Margin="0,0,0,12"/>
                             <TextBlock Text="When enabled, ReStore will automatically start when you log in to Windows." Margin="0,4,0,16" TextWrapping="Wrap" Foreground="{DynamicResource TextFillColorSecondaryBrush}" FontSize="12" LineHeight="18"/>
@@ -777,7 +782,7 @@
                             </StackPanel>
                         </Border>
                     </Expander.Header>
-                    <Border Padding="20" Background="{DynamicResource CardBackgroundFillColorDefaultBrush}" CornerRadius="8" Effect="{StaticResource CardShadow}" Margin="0,8,0,0">
+                    <Border Padding="20" Background="{DynamicResource CardBackgroundFillColorDefaultBrush}" CornerRadius="8" Effect="{StaticResource CardShadow}" RenderOptions.ClearTypeHint="Enabled" Margin="0,8,0,0">
                         <StackPanel Orientation="Vertical">
                             <Grid>
                                 <Grid.ColumnDefinitions>

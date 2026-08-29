@@ -1,4 +1,4 @@
-using ReStore.Core.src.utils;
+﻿using ReStore.Core.src.utils;
 using ReStore.Core.src.storage;
 using ReStore.Core.src.core;
 using System.Runtime.Versioning;
@@ -76,175 +76,165 @@ public class SystemBackupManager
         };
     }
 
-    public async Task BackupInstalledProgramsAsync()
+    public Task BackupInstalledProgramsAsync()
     {
-        _logger.Log("Backing up installed programs...", LogLevel.Info);
-
-        IStorage? storage = null;
-        try
-        {
-            var storageType = GetStorageTypeForComponent("programs");
-            storage = await _config.CreateStorageAsync(storageType);
-            _logger.Log($"Using {storageType} storage for programs backup", LogLevel.Info);
-
-            var programs = await _programDiscovery.GetAllInstalledProgramsAsync();
-
-            var timestamp = DateTime.Now.ToString("yyyyMMddHHmmss");
-            var uniqueId = Guid.NewGuid().ToString("N");
-            var tempDir = Path.Combine(Path.GetTempPath(), "ReStore_SystemBackup", $"{timestamp}_{uniqueId}");
-            Directory.CreateDirectory(tempDir);
-
-            var jsonPath = Path.Combine(tempDir, "installed_programs.json");
-            await _programDiscovery.ExportProgramsToJsonAsync(programs, jsonPath);
-
-            await CreateWingetRestoreScriptAsync(programs, Path.Combine(tempDir, "restore_winget_programs.ps1"));
-
-            await CreateManualInstallListAsync(programs, Path.Combine(tempDir, "manual_install_list.txt"));
-
-            await CreateFullRestoreScriptAsync(programs, Path.Combine(tempDir, "restore_programs.ps1"));
-
-            var remotePath = $"system_backups/programs/programs_backup_{uniqueId}_{timestamp}.zip";
-            var zipPath = Path.Combine(Path.GetTempPath(), $"programs_backup_{uniqueId}_{timestamp}.zip");
-
-            var compressionUtil = new CompressionUtil();
-            var filesToCompress = Directory.GetFiles(tempDir).ToList();
-            await CompressionUtil.CompressFilesAsync(filesToCompress, tempDir, zipPath);
-
-            string fileToUpload = zipPath;
-            if (_config.Encryption.Enabled)
+        return RunComponentBackupAsync(
+            new SystemBackupComponent(
+                Component: "programs",
+                Group: "system_programs",
+                FileNamePrefix: "programs_backup",
+                RemoteDirectory: "system_backups/programs",
+                StartMessage: "Backing up installed programs...",
+                FailureMessage: "Failed to backup installed programs"),
+            async tempDir =>
             {
-                EnsureEncryptionProviderAvailable();
-                _logger.Log("Encrypting programs backup...", LogLevel.Info);
-                var password = await _passwordProvider!.GetPasswordAsync();
-                if (string.IsNullOrEmpty(password))
-                {
-                    throw new InvalidOperationException("Encryption is enabled but no password was provided");
-                }
+                var programs = await _programDiscovery.GetAllInstalledProgramsAsync();
 
-                var encryptedPath = await CompressionUtil.CompressAndEncryptAsync(zipPath, password, _config.Encryption.Salt!, _logger, _config.Encryption.KeyDerivationIterations);
-                fileToUpload = encryptedPath;
-                remotePath = remotePath.Replace(".zip", ".zip.enc");
+                await _programDiscovery.ExportProgramsToJsonAsync(programs, Path.Combine(tempDir, "installed_programs.json"));
+                await CreateWingetRestoreScriptAsync(programs, Path.Combine(tempDir, "restore_winget_programs.ps1"));
+                await CreateManualInstallListAsync(programs, Path.Combine(tempDir, "manual_install_list.txt"));
+                await CreateFullRestoreScriptAsync(programs, Path.Combine(tempDir, "restore_programs.ps1"));
 
-                // Upload metadata file
-                var metadataPath = encryptedPath + ".meta";
-                var remoteMetadataPath = remotePath + ".meta";
-                await storage.UploadAsync(metadataPath, remoteMetadataPath);
-                _logger.Log($"Uploaded encryption metadata: {remoteMetadataPath}", LogLevel.Debug);
-            }
-
-            await storage.UploadAsync(fileToUpload, remotePath);
-
-            long backupSize = new FileInfo(fileToUpload).Length;
-            _systemState.AddBackup("system_programs", remotePath, false, storageType, backupSize);
-            await _retentionManager.ApplyGroupAsync("system_programs");
-            await _systemState.SaveStateAsync();
-
-            File.Delete(fileToUpload);
-            if (_config.Encryption.Enabled)
-            {
-                var metadataPath = fileToUpload + ".meta";
-                if (File.Exists(metadataPath))
-                {
-                    File.Delete(metadataPath);
-                }
-            }
-            Directory.Delete(tempDir, true);
-
-            _logger.Log($"Programs backup completed: {programs.Count} programs backed up to {remotePath}", LogLevel.Info);
-        }
-        catch (Exception ex)
-        {
-            _logger.Log($"Failed to backup installed programs: {ex.Message}", LogLevel.Error);
-            throw;
-        }
-        finally
-        {
-            storage?.Dispose();
-        }
+                return $"{programs.Count} programs";
+            });
     }
 
-    public async Task BackupEnvironmentVariablesAsync()
+    public Task BackupEnvironmentVariablesAsync()
     {
-        _logger.Log("Backing up environment variables...", LogLevel.Info);
+        return RunComponentBackupAsync(
+            new SystemBackupComponent(
+                Component: "environment",
+                Group: "system_environment",
+                FileNamePrefix: "env_backup",
+                RemoteDirectory: "system_backups/environment",
+                StartMessage: "Backing up environment variables...",
+                FailureMessage: "Failed to backup environment variables"),
+            async tempDir =>
+            {
+                var variables = await _envManager.GetAllEnvironmentVariablesAsync();
+
+                await _envManager.ExportEnvironmentVariablesToJsonAsync(variables, Path.Combine(tempDir, "environment_variables.json"));
+                await _envManager.CreateRestoreScriptAsync(variables, Path.Combine(tempDir, "restore_environment_variables.ps1"));
+                await CreateRegistryBackupScriptAsync(Path.Combine(tempDir, "backup_env_registry.ps1"));
+
+                return $"{variables.Count} variables";
+            });
+    }
+
+    public Task BackupWindowsSettingsAsync()
+    {
+        return RunComponentBackupAsync(
+            new SystemBackupComponent(
+                Component: "settings",
+                Group: "system_settings",
+                FileNamePrefix: "settings_backup",
+                RemoteDirectory: "system_backups/settings",
+                StartMessage: "Backing up Windows settings...",
+                FailureMessage: "Failed to backup Windows settings"),
+            async tempDir =>
+            {
+                var export = await _settingsManager.ExportWindowsSettingsAsync(tempDir);
+
+                var scriptPath = Path.Combine(tempDir, "restore_windows_settings.ps1");
+                await _settingsManager.CreateRestoreScriptAsync(export, tempDir, scriptPath);
+
+                return $"{export.ExportedCategories.Count} categories";
+            });
+    }
+
+    /// <summary>Naming and storage conventions for one system backup component.</summary>
+    private sealed record SystemBackupComponent(
+        string Component,
+        string Group,
+        string FileNamePrefix,
+        string RemoteDirectory,
+        string StartMessage,
+        string FailureMessage);
+
+    /// <summary>
+    /// Shared pipeline: resolve storage, stage payload, archive, optionally encrypt, upload,
+    /// record history, apply retention, and always clean up temp files.
+    /// </summary>
+    /// <param name="writePayloadAsync">
+    /// Writes files into the staging directory and returns a short summary for the log line.
+    /// </param>
+    private async Task RunComponentBackupAsync(
+        SystemBackupComponent component,
+        Func<string, Task<string>> writePayloadAsync)
+    {
+        _logger.Log(component.StartMessage, LogLevel.Info);
 
         IStorage? storage = null;
+        string? tempDir = null;
+        string? zipPath = null;
+        string? fileToUpload = null;
+
         try
         {
-            var storageType = GetStorageTypeForComponent("environment");
+            var storageType = GetStorageTypeForComponent(component.Component);
             storage = await _config.CreateStorageAsync(storageType);
-            _logger.Log($"Using {storageType} storage for environment variables backup", LogLevel.Info);
-
-            var variables = await _envManager.GetAllEnvironmentVariablesAsync();
+            _logger.Log($"Using {storageType} storage for {component.Component} backup", LogLevel.Info);
 
             var timestamp = DateTime.Now.ToString("yyyyMMddHHmmss");
             var uniqueId = Guid.NewGuid().ToString("N");
-            var tempDir = Path.Combine(Path.GetTempPath(), "ReStore_SystemBackup", $"{timestamp}_{uniqueId}");
+            tempDir = Path.Combine(Path.GetTempPath(), "ReStore_SystemBackup", $"{timestamp}_{uniqueId}");
             Directory.CreateDirectory(tempDir);
 
-            var jsonPath = Path.Combine(tempDir, "environment_variables.json");
-            await _envManager.ExportEnvironmentVariablesToJsonAsync(variables, jsonPath);
+            var payloadSummary = await writePayloadAsync(tempDir);
 
-            var scriptPath = Path.Combine(tempDir, "restore_environment_variables.ps1");
-            await _envManager.CreateRestoreScriptAsync(variables, scriptPath);
+            var remotePath = $"{component.RemoteDirectory}/{component.FileNamePrefix}_{uniqueId}_{timestamp}.zip";
+            zipPath = Path.Combine(Path.GetTempPath(), $"{component.FileNamePrefix}_{uniqueId}_{timestamp}.zip");
 
-            await CreateRegistryBackupScriptAsync(Path.Combine(tempDir, "backup_env_registry.ps1"));
-
-            var remotePath = $"system_backups/environment/env_backup_{uniqueId}_{timestamp}.zip";
-            var zipPath = Path.Combine(Path.GetTempPath(), $"env_backup_{uniqueId}_{timestamp}.zip");
-
-            var compressionUtil = new CompressionUtil();
-            var filesToCompress = Directory.GetFiles(tempDir).ToList();
+            // Recursive so payload writers may use subdirectories.
+            var filesToCompress = Directory.GetFiles(tempDir, "*", SearchOption.AllDirectories).ToList();
             await CompressionUtil.CompressFilesAsync(filesToCompress, tempDir, zipPath);
 
-            string fileToUpload = zipPath;
+            fileToUpload = zipPath;
             if (_config.Encryption.Enabled)
             {
                 EnsureEncryptionProviderAvailable();
-                _logger.Log("Encrypting environment backup...", LogLevel.Info);
+                _logger.Log($"Encrypting {component.Component} backup...", LogLevel.Info);
+
                 var password = await _passwordProvider!.GetPasswordAsync();
                 if (string.IsNullOrEmpty(password))
                 {
                     throw new InvalidOperationException("Encryption is enabled but no password was provided");
                 }
 
-                var encryptedPath = await CompressionUtil.CompressAndEncryptAsync(zipPath, password, _config.Encryption.Salt!, _logger, _config.Encryption.KeyDerivationIterations);
+                var encryptedPath = await CompressionUtil.CompressAndEncryptAsync(
+                    zipPath,
+                    password,
+                    _config.Encryption.Salt!,
+                    _logger,
+                    _config.Encryption.KeyDerivationIterations);
+
                 fileToUpload = encryptedPath;
                 remotePath = remotePath.Replace(".zip", ".zip.enc");
 
-                // Upload metadata file
-                var metadataPath = encryptedPath + ".meta";
                 var remoteMetadataPath = remotePath + ".meta";
-                await storage.UploadAsync(metadataPath, remoteMetadataPath);
+                await storage.UploadAsync(encryptedPath + ".meta", remoteMetadataPath);
                 _logger.Log($"Uploaded encryption metadata: {remoteMetadataPath}", LogLevel.Debug);
             }
 
             await storage.UploadAsync(fileToUpload, remotePath);
 
-            long backupSize = new FileInfo(fileToUpload).Length;
-            _systemState.AddBackup("system_environment", remotePath, false, storageType, backupSize);
-            await _retentionManager.ApplyGroupAsync("system_environment");
+            var backupSize = new FileInfo(fileToUpload).Length;
+            _systemState.AddBackup(component.Group, remotePath, false, storageType, backupSize);
+            await _retentionManager.ApplyGroupAsync(component.Group);
             await _systemState.SaveStateAsync();
 
-            File.Delete(fileToUpload);
-            if (_config.Encryption.Enabled)
-            {
-                var metadataPath = fileToUpload + ".meta";
-                if (File.Exists(metadataPath))
-                {
-                    File.Delete(metadataPath);
-                }
-            }
-            Directory.Delete(tempDir, true);
-
-            _logger.Log($"Environment variables backup completed: {variables.Count} variables backed up to {remotePath}", LogLevel.Info);
+            _logger.Log(
+                $"{component.Component} backup completed: {payloadSummary} backed up to {remotePath}",
+                LogLevel.Info);
         }
         catch (Exception ex)
         {
-            _logger.Log($"Failed to backup environment variables: {ex.Message}", LogLevel.Error);
+            _logger.Log($"{component.FailureMessage}: {ex.Message}", LogLevel.Error);
             throw;
         }
         finally
         {
+            CleanupBackupTempArtifacts(tempDir, zipPath, fileToUpload);
             storage?.Dispose();
         }
     }
@@ -375,7 +365,6 @@ public class SystemBackupManager
         var wingetPrograms = programs.Where(p => p.IsWingetAvailable && !string.IsNullOrEmpty(p.WingetId)).ToList();
         var manualPrograms = programs.Where(p => !p.IsWingetAvailable).ToList();
 
-        // Add winget section
         scriptContent.AddRange(new[]
         {
             "# Installing programs via winget",
@@ -661,84 +650,52 @@ public class SystemBackupManager
         }
     }
 
-    public async Task BackupWindowsSettingsAsync()
+    private void CleanupBackupTempArtifacts(string? tempDir, string? zipPath, string? fileToUpload)
     {
-        _logger.Log("Backing up Windows settings...", LogLevel.Info);
+        var tempFiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        AddTempFile(tempFiles, zipPath);
+        AddTempFile(tempFiles, fileToUpload);
 
-        IStorage? storage = null;
+        if (!string.IsNullOrWhiteSpace(fileToUpload))
+        {
+            AddTempFile(tempFiles, fileToUpload + ".meta");
+        }
+
+        foreach (var tempFile in tempFiles)
+        {
+            try
+            {
+                if (File.Exists(tempFile))
+                {
+                    File.Delete(tempFile);
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.Log($"Failed to delete temporary backup file {tempFile}: {ex.Message}", LogLevel.Warning);
+            }
+        }
+
+        if (string.IsNullOrWhiteSpace(tempDir) || !Directory.Exists(tempDir))
+        {
+            return;
+        }
+
         try
         {
-            var storageType = GetStorageTypeForComponent("settings");
-            storage = await _config.CreateStorageAsync(storageType);
-            _logger.Log($"Using {storageType} storage for Windows settings backup", LogLevel.Info);
-
-            var timestamp = DateTime.Now.ToString("yyyyMMddHHmmss");
-            var uniqueId = Guid.NewGuid().ToString("N");
-            var tempDir = Path.Combine(Path.GetTempPath(), "ReStore_SystemBackup", $"{timestamp}_{uniqueId}");
-            Directory.CreateDirectory(tempDir);
-
-            var export = await _settingsManager.ExportWindowsSettingsAsync(tempDir);
-
-            var scriptPath = Path.Combine(tempDir, "restore_windows_settings.ps1");
-            await _settingsManager.CreateRestoreScriptAsync(export, tempDir, scriptPath);
-
-            var remotePath = $"system_backups/settings/settings_backup_{uniqueId}_{timestamp}.zip";
-            var zipPath = Path.Combine(Path.GetTempPath(), $"settings_backup_{uniqueId}_{timestamp}.zip");
-
-            var compressionUtil = new CompressionUtil();
-            var filesToCompress = Directory.GetFiles(tempDir).ToList();
-            await CompressionUtil.CompressFilesAsync(filesToCompress, tempDir, zipPath);
-
-            string fileToUpload = zipPath;
-            if (_config.Encryption.Enabled)
-            {
-                EnsureEncryptionProviderAvailable();
-                _logger.Log("Encrypting settings backup...", LogLevel.Info);
-                var password = await _passwordProvider!.GetPasswordAsync();
-                if (string.IsNullOrEmpty(password))
-                {
-                    throw new InvalidOperationException("Encryption is enabled but no password was provided");
-                }
-
-                var encryptedPath = await CompressionUtil.CompressAndEncryptAsync(zipPath, password, _config.Encryption.Salt!, _logger, _config.Encryption.KeyDerivationIterations);
-                fileToUpload = encryptedPath;
-                remotePath = remotePath.Replace(".zip", ".zip.enc");
-
-                // Upload metadata file
-                var metadataPath = encryptedPath + ".meta";
-                var remoteMetadataPath = remotePath + ".meta";
-                await storage.UploadAsync(metadataPath, remoteMetadataPath);
-                _logger.Log($"Uploaded encryption metadata: {remoteMetadataPath}", LogLevel.Debug);
-            }
-
-            await storage.UploadAsync(fileToUpload, remotePath);
-
-            long backupSize = new FileInfo(fileToUpload).Length;
-            _systemState.AddBackup("system_settings", remotePath, false, storageType, backupSize);
-            await _retentionManager.ApplyGroupAsync("system_settings");
-            await _systemState.SaveStateAsync();
-
-            File.Delete(fileToUpload);
-            if (_config.Encryption.Enabled)
-            {
-                var metadataPath = fileToUpload + ".meta";
-                if (File.Exists(metadataPath))
-                {
-                    File.Delete(metadataPath);
-                }
-            }
             Directory.Delete(tempDir, true);
-
-            _logger.Log($"Windows settings backup completed: {export.ExportedCategories.Count} categories backed up to {remotePath}", LogLevel.Info);
         }
         catch (Exception ex)
         {
-            _logger.Log($"Failed to backup Windows settings: {ex.Message}", LogLevel.Error);
-            throw;
+            _logger.Log($"Failed to delete temporary backup directory {tempDir}: {ex.Message}", LogLevel.Warning);
         }
-        finally
+    }
+
+    private static void AddTempFile(HashSet<string> tempFiles, string? path)
+    {
+        if (!string.IsNullOrWhiteSpace(path))
         {
-            storage?.Dispose();
+            tempFiles.Add(path);
         }
     }
 

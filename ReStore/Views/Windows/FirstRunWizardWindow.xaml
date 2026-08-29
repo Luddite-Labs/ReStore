@@ -1,0 +1,146 @@
+<Window x:Class="ReStore.Views.Windows.FirstRunWizardWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:shell="clr-namespace:System.Windows.Shell;assembly=PresentationFramework" Title="Welcome to ReStore" Height="640" Width="720" WindowStartupLocation="CenterScreen" WindowStyle="None" ResizeMode="NoResize" TextOptions.TextFormattingMode="Display" TextOptions.TextRenderingMode="ClearType" Background="{DynamicResource ApplicationBackgroundBrush}" UseLayoutRounding="True">
+
+    <shell:WindowChrome.WindowChrome>
+        <shell:WindowChrome CaptionHeight="32" CornerRadius="8" GlassFrameThickness="0" ResizeBorderThickness="0"/>
+    </shell:WindowChrome.WindowChrome>
+
+    <Border BorderThickness="1" BorderBrush="{DynamicResource ControlStrokeColorDefaultBrush}" CornerRadius="8">
+        <Grid>
+            <Grid.RowDefinitions>
+                <RowDefinition Height="32"/>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="*"/>
+                <RowDefinition Height="Auto"/>
+            </Grid.RowDefinitions>
+
+            <Grid Grid.Row="0" Background="{DynamicResource ApplicationBackgroundBrush}" shell:WindowChrome.IsHitTestVisibleInChrome="True">
+                <TextBlock Text="Welcome to ReStore" VerticalAlignment="Center" Margin="16,0" FontWeight="SemiBold" Foreground="{DynamicResource TextFillColorPrimaryBrush}"/>
+            </Grid>
+
+            <StackPanel Grid.Row="1" Margin="28,20,28,0">
+                <TextBlock x:Name="StepTitleText" Text="What should ReStore back up?" FontSize="22" FontWeight="SemiBold" Foreground="{DynamicResource TextFillColorPrimaryBrush}"/>
+                <TextBlock x:Name="StepSubtitleText" Text="Pick the folders you want protected." FontSize="13" Margin="0,4,0,0" Foreground="{DynamicResource TextFillColorSecondaryBrush}"/>
+                <TextBlock x:Name="StepCounterText" Text="Step 1 of 3" FontSize="11" Margin="0,8,0,0" Foreground="{DynamicResource TextFillColorTertiaryBrush}"/>
+            </StackPanel>
+
+            <Grid Grid.Row="2" Margin="28,16,28,0">
+
+                <!-- Step 1: folders -->
+                <Border x:Name="FoldersStep" Background="{DynamicResource CardBackgroundFillColorDefaultBrush}" CornerRadius="8" Padding="16">
+                    <DockPanel>
+                        <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,12">
+                            <Button x:Name="AddFolderBtn" Content="Add folder..." Padding="12,6" Click="AddFolderBtn_Click"/>
+                            <TextBlock x:Name="FolderSummaryText" VerticalAlignment="Center" Margin="12,0,0,0" FontSize="12" Foreground="{DynamicResource TextFillColorSecondaryBrush}"/>
+                        </StackPanel>
+
+                        <ScrollViewer VerticalScrollBarVisibility="Auto">
+                            <ItemsControl x:Name="FolderList">
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <Border Background="{DynamicResource CardBackgroundFillColorSecondaryBrush}" CornerRadius="4" Padding="10,8" Margin="0,0,0,6">
+                                            <Grid>
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="Auto"/>
+                                                    <ColumnDefinition Width="*"/>
+                                                    <ColumnDefinition Width="Auto"/>
+                                                </Grid.ColumnDefinitions>
+                                                <CheckBox Grid.Column="0" IsChecked="{Binding IsSelected, Mode=TwoWay}" VerticalAlignment="Center" Margin="0,0,10,0"/>
+                                                <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                                                    <TextBlock Text="{Binding DisplayName}" FontSize="13" FontWeight="Medium" Foreground="{DynamicResource TextFillColorPrimaryBrush}"/>
+                                                    <TextBlock Text="{Binding Path}" FontSize="10" FontFamily="Consolas" TextTrimming="CharacterEllipsis" Foreground="{DynamicResource TextFillColorTertiaryBrush}"/>
+                                                </StackPanel>
+                                                <TextBlock Grid.Column="2" Text="{Binding StatusLabel}" FontSize="10" VerticalAlignment="Center" Foreground="{DynamicResource TextFillColorSecondaryBrush}"/>
+                                            </Grid>
+                                        </Border>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                        </ScrollViewer>
+                    </DockPanel>
+                </Border>
+
+                <!-- Step 2: destination -->
+                <Border x:Name="DestinationStep" Background="{DynamicResource CardBackgroundFillColorDefaultBrush}" CornerRadius="8" Padding="16" Visibility="Collapsed">
+                    <StackPanel>
+                        <TextBlock Text="Storage provider" FontWeight="SemiBold" Margin="0,0,0,6" Foreground="{DynamicResource TextFillColorPrimaryBrush}"/>
+                        <ComboBox x:Name="ProviderCombo" MinWidth="240" HorizontalAlignment="Left" VerticalContentAlignment="Center" SelectionChanged="ProviderCombo_SelectionChanged"/>
+
+                        <TextBlock x:Name="ProviderHintText" FontSize="11" TextWrapping="Wrap" Margin="0,8,0,0" Foreground="{DynamicResource TextFillColorTertiaryBrush}"/>
+
+                        <StackPanel x:Name="LocalPathPanel" Margin="0,16,0,0">
+                            <TextBlock Text="Backup folder" FontWeight="SemiBold" Margin="0,0,0,6" Foreground="{DynamicResource TextFillColorPrimaryBrush}"/>
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <TextBox x:Name="LocalPathBox" Grid.Column="0" Padding="8" VerticalContentAlignment="Center"/>
+                                <Button x:Name="BrowseLocalBtn" Grid.Column="1" Content="Browse..." Padding="12,6" Margin="8,0,0,0" Click="BrowseLocalBtn_Click"/>
+                            </Grid>
+                        </StackPanel>
+
+                        <ItemsControl x:Name="CredentialFields" Margin="0,16,0,0">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <StackPanel Margin="0,0,0,10">
+                                        <TextBlock Text="{Binding Label}" FontSize="12" FontWeight="Medium" Margin="0,0,0,4" Foreground="{DynamicResource TextFillColorPrimaryBrush}"/>
+                                        <TextBox Text="{Binding Value, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" Padding="8" VerticalContentAlignment="Center"/>
+                                    </StackPanel>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+
+                        <StackPanel Orientation="Horizontal" Margin="0,12,0,0">
+                            <Button x:Name="TestConnectionBtn" Content="Test connection" Padding="12,6" Click="TestConnectionBtn_Click"/>
+                            <TextBlock x:Name="TestResultText" VerticalAlignment="Center" Margin="12,0,0,0" FontSize="12" TextWrapping="Wrap" Foreground="{DynamicResource TextFillColorSecondaryBrush}"/>
+                        </StackPanel>
+                    </StackPanel>
+                </Border>
+
+                <!-- Step 3: protection -->
+                <Border x:Name="ProtectionStep" Background="{DynamicResource CardBackgroundFillColorDefaultBrush}" CornerRadius="8" Padding="16" Visibility="Collapsed">
+                    <StackPanel>
+                        <CheckBox x:Name="EnableEncryptionCheck" Content="Encrypt my backups with a password" FontWeight="SemiBold" Foreground="{DynamicResource TextFillColorPrimaryBrush}" Click="EnableEncryptionCheck_Click"/>
+                        <Border Background="#1AEF4444" BorderBrush="#EF4444" BorderThickness="1" CornerRadius="6" Padding="12" Margin="0,12,0,0">
+                            <TextBlock TextWrapping="Wrap" FontSize="12" Foreground="{DynamicResource TextFillColorPrimaryBrush}">
+                                Encryption is applied before anything leaves your machine. There is no recovery
+                                path: if you lose the password, every encrypted backup becomes permanently
+                                unreadable. ReStore cannot reset it for you.
+                            </TextBlock>
+                        </Border>
+                        <TextBlock x:Name="EncryptionStatusText" FontSize="12" Margin="0,12,0,0" Foreground="{DynamicResource TextFillColorSecondaryBrush}"/>
+
+                        <Rectangle Height="1" Fill="{DynamicResource DividerStrokeColorDefaultBrush}" Margin="0,20,0,16"/>
+
+                        <CheckBox x:Name="EnableRetentionCheck" Content="Delete old snapshots automatically" FontWeight="SemiBold" Foreground="{DynamicResource TextFillColorPrimaryBrush}"/>
+                        <TextBlock TextWrapping="Wrap" FontSize="11" Margin="0,6,0,0" Foreground="{DynamicResource TextFillColorTertiaryBrush}">
+                            Without this, snapshots are kept forever and your storage use grows without bound.
+                            Keeps the 10 most recent per folder and discards anything over 30 days old.
+                        </TextBlock>
+
+                        <Rectangle Height="1" Fill="{DynamicResource DividerStrokeColorDefaultBrush}" Margin="0,20,0,16"/>
+
+                        <CheckBox x:Name="RunFirstBackupCheck" Content="Run the first backup as soon as I finish" IsChecked="True" FontWeight="SemiBold" Foreground="{DynamicResource TextFillColorPrimaryBrush}"/>
+                    </StackPanel>
+                </Border>
+            </Grid>
+
+            <Border Grid.Row="3" Margin="0,20,0,0" Padding="28,16" Background="{DynamicResource CardBackgroundFillColorDefaultBrush}" BorderBrush="{DynamicResource ControlStrokeColorDefaultBrush}" BorderThickness="0,1,0,0">
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <Button Grid.Column="0" x:Name="SkipBtn" Content="Skip setup" Padding="12,6" Click="SkipBtn_Click"/>
+                    <Button Grid.Column="2" x:Name="BackBtn" Content="Back" Padding="16,6" Margin="0,0,8,0" IsEnabled="False" Click="BackBtn_Click"/>
+                    <Button Grid.Column="3" x:Name="NextBtn" Content="Next" Padding="16,6" Click="NextBtn_Click"/>
+                </Grid>
+            </Border>
+        </Grid>
+    </Border>
+</Window>

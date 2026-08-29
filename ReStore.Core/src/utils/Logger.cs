@@ -72,7 +72,6 @@ public class Logger : ILogger
             var fileInfo = new FileInfo(_logFilePath);
             if (fileInfo.Length < MAX_LOG_SIZE_BYTES) return;
 
-            // Delete oldest backup if we're at max count
             var oldestBackup = Path.Combine(_logDir, $"restore.log.{MAX_BACKUP_COUNT}");
             if (File.Exists(oldestBackup))
             {
@@ -90,7 +89,6 @@ public class Logger : ILogger
                 }
             }
 
-            // Move current log to .1
             var firstBackup = Path.Combine(_logDir, "restore.log.1");
             File.Move(_logFilePath, firstBackup, overwrite: true);
         }

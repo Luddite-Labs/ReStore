@@ -52,7 +52,6 @@ public class CompressionUtil
                     continue;
                 }
 
-                // Calculate the relative path within the archive
                 var entryName = Path.GetRelativePath(baseDirectory, filePath);
                 entryName = entryName.Replace(Path.DirectorySeparatorChar, '/');
 

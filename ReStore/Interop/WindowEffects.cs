@@ -38,7 +38,6 @@ namespace ReStore.Interop
                     _ = DwmSetWindowAttribute(handle, DWMWA_MICA_EFFECT, ref micaEnabled, sizeof(int));
                 }
 
-                // Match title bar with app theme
                 SetImmersiveDarkMode(window);
             }
             catch

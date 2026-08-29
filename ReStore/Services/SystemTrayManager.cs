@@ -109,6 +109,11 @@ namespace ReStore.Services
             _taskbarIcon.ShowBalloonTip(title, message, Hardcodet.Wpf.TaskbarNotification.BalloonIcon.Info);
         }
 
+        public void ShowBalloonTip(string title, string message, BalloonIcon icon)
+        {
+            _taskbarIcon.ShowBalloonTip(title, message, icon);
+        }
+
         public void ExitApplication()
         {
             _isExiting = true;

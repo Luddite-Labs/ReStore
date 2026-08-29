@@ -1,4 +1,5 @@
 using System.IO;
+using System.Diagnostics;
 using System.Text.Json;
 using Wpf.Ui.Appearance;
 
@@ -32,7 +33,10 @@ namespace ReStore.Services
                     if (s != null) return s;
                 }
             }
-            catch { }
+            catch (Exception ex)
+            {
+                Trace.TraceWarning($"Failed to load theme settings from {SettingsPath}: {ex.Message}");
+            }
             return new ThemeSettings();
         }
 
@@ -44,7 +48,10 @@ namespace ReStore.Services
                 var json = JsonSerializer.Serialize(this, new JsonSerializerOptions { WriteIndented = true });
                 File.WriteAllText(SettingsPath, json);
             }
-            catch { }
+            catch (Exception ex)
+            {
+                Trace.TraceWarning($"Failed to save theme settings to {SettingsPath}: {ex.Message}");
+            }
         }
 
         public void Apply()

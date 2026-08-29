@@ -28,7 +28,6 @@ public class DropboxStorage(ILogger logger) : StorageBase(logger)
                 _dropboxClient = new DropboxClient(accessToken);
             }
 
-            // Verify connection
             var account = await _dropboxClient.Users.GetCurrentAccountAsync();
             Logger.Log($"Connected to Dropbox as: {account.Name.DisplayName}", LogLevel.Info);
         }
